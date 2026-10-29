@@ -138,6 +138,8 @@ DSR_StartGameType()
     DSR_Vars();
 
     level.playerAdmin = undefined;
+    level.gamePaused = false;
+
     thread DSR_AddBots();
     thread DSR_PostGame();
 }
@@ -170,10 +172,7 @@ DSR_PlayerKilled(eInflictor, attacker, iDamage, sMeansOfDeath, sWeapon, vDir, sH
 
 DSR_PostGame()
 {
-    level waittill("map_ended");
-    wait 2 - level.frametime; //check if game should pause 1 frame before final killcam check
-
-    level.gamePaused = false;
+    level waittill("intermission");
 
     //if no bots at this point, just run regular map end
     if(!isDefined(game["hasBots"]))
@@ -202,6 +201,8 @@ DSR_PostGame()
 		level notify("postround");
 		level waittill("end_finalkillcam");
 	}
+
+    level waittill("map_ended");
     wait 10 - level.frametime; // kill end map 1 frame before regular rotation
 
     level notify("kill_endmap");
