@@ -156,8 +156,9 @@ DSR_PlayerConnect()
 
 DSR_BotConnect()
 {
-
+    self setClientCvar("name", "Pwned by Mrs Bert");
 }
+
 DSR_PlayerDamage(eInflictor, eAttacker, iDamage, iDFlags, sMeansOfDeath, sWeapon, vPoint, vDir, sHitLoc)
 {
 	self endon("killed");
@@ -166,7 +167,7 @@ DSR_PlayerDamage(eInflictor, eAttacker, iDamage, iDFlags, sMeansOfDeath, sWeapon
 
 DSR_PlayerKilled(eInflictor, attacker, iDamage, sMeansOfDeath, sWeapon, vDir, sHitLoc)
 {
-    	
+    return;
 }
 
 DSR_PostGame()
