@@ -1,0 +1,22 @@
+#include "ui_mp/menudef.h"
+
+{
+	menuDef
+	{
+		name			"reconnect"
+		rect			0 0 640 480
+
+		onEsc
+		{
+			close reconnect;
+		}
+		onOpen
+		{
+            exec "disconnect; wait; reconnect";
+			close reconnect;
+		}
+		onClose
+		{
+		}
+    }
+}

@@ -1,0 +1,25 @@
+#include "ui_mp/menudef.h"
+
+{
+	menuDef
+	{
+		name			"restart"
+		rect			0 0 640 480
+		focuscolor		UI_FOCUS_COLOR
+		style			WINDOW_STYLE_FILLED
+		//blurWorld		5.0
+		onEsc
+		{
+			close restart;
+		}
+		onOpen
+		{
+            exec "disconnect; wait 1; map_rotate";
+			setcvar tdm_roundCount "0";
+			close restart;
+		}
+		onClose
+		{
+		}
+    }
+}
