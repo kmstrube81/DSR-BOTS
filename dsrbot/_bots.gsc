@@ -268,7 +268,7 @@ loadMap(map, type)
             if(isdefined(player))
             {
                 player closeMenu();
-                exitLevel(false);
+                player waitHumanPlayer();
                 break;
             }
 		}
