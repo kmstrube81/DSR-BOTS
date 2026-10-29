@@ -273,7 +273,7 @@ ExecClientCommand(cmd)
 
 DSR_Intermission()
 {
-    if(!isDefined(game["state"]) || (isDefined(game["state"]) && !game["state"] == "intermission"))
+    if(!isDefined(game["state"]) || (isDefined(game["state"]) && game["state"] != "intermission"))
         level waittill("intermission");
     if(level.gamePaused)
     {
