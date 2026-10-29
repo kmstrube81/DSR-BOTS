@@ -33,7 +33,7 @@ DSR_Precache()
 	{
 		case "american":
 			//game["headicon_allies"] = "gfx/hud/headicon@american.tga";
-			precacheItem("us_botgrenade_mp");
+			/*precacheItem("us_botgrenade_mp");
 			precacheItem("us_botgrenade2_mp");
 			precacheItem("bot_bazooka_mp");
 			precacheItem("bot_m1carbine_walk2_mp");
@@ -47,12 +47,12 @@ DSR_Precache()
 			precacheItem("bot_m1carbine_stand_mp");
 			precacheItem("bot_thompson_stand_mp");
 			precacheItem("bot_bar_stand_mp");
-			precacheItem("bot_m1garand_stand_mp");
+			precacheItem("bot_m1garand_stand_mp"); */
 			break;
 	
 		case "british":
 			//game["headicon_allies"] = "gfx/hud/headicon@british.tga";
-			precacheItem("uk_botgrenade_mp");
+			/*precacheItem("uk_botgrenade_mp");
 			precacheItem("uk_botgrenade2_mp");
 			precacheItem("bot_bazooka_mp");
 			precacheItem("bot_sten_walk2_mp");
@@ -66,12 +66,12 @@ DSR_Precache()
 			precacheItem("bot_sten_stand_mp");
 			precacheItem("bot_thompson_stand_mp");
 			precacheItem("bot_enfield_stand_mp");
-			precacheItem("bot_bren_stand_mp");
+			precacheItem("bot_bren_stand_mp");*/
 			break;
 	
 		case "russian":
 			//game["headicon_allies"] = "gfx/hud/headicon@russian.tga";
-			precacheItem("ru_botgrenade_mp");
+			/*precacheItem("ru_botgrenade_mp");
 			precacheItem("ru_botgrenade2_mp");
 			precacheItem("bot_bazooka_mp");
 			precacheItem("bot_svt40_walk2_mp");
@@ -82,7 +82,7 @@ DSR_Precache()
 			precacheItem("bot_mosin_nagant_close_mp");
 			precacheItem("bot_svt40_stand_mp");
 			precacheItem("bot_ppsh_stand_mp");
-			precacheItem("bot_mosin_nagant_stand_mp");
+			precacheItem("bot_mosin_nagant_stand_mp");*/
 			break;
 	}
 
@@ -90,7 +90,7 @@ DSR_Precache()
 	{
 		case "german":
 			//game["headicon_axis"] = "gfx/hud/headicon@german.tga";
-			precacheItem("ge_botgrenade_mp");
+			/*precacheItem("ge_botgrenade_mp");
 			precacheItem("ge_botgrenade2_mp");
 			precacheItem("bot_panzerfaust_mp");
 			precacheItem("bot_mp40_walk2_mp");
@@ -104,18 +104,16 @@ DSR_Precache()
 			precacheItem("bot_mp40_stand_mp");
 			precacheItem("bot_mp44_stand_mp");
 			precacheItem("bot_kar98k_stand_mp");
-			precacheItem("bot_gewehr43_stand_mp");
+			precacheItem("bot_gewehr43_stand_mp");*/
 			break;
     }
 	
-    precacheItem("bot_melee_mp");
+   /* precacheItem("bot_melee_mp");
     precacheItem("jumpdn_bot_mp");
     precacheItem("climbup_bot_mp");
 	precacheItem("mantle_bot_mp");
-	precacheItem("smokegrenade_mp");
-	precacheItem("flashgrenade_mp");
 	precacheItem("bot_binoculars_artillery_mp");
-
+    */
 	precacheString(&"MBOT_MAPNOTSUPPORT");
 	precacheString(&"MBOT_NOMORE");
 	precacheString(&"MBOT_SKILLSWITCH");
