@@ -206,6 +206,7 @@ DSR_PostGame()
     wait 10 - level.frametime; // kill end map 1 frame before regular rotation
 
     level notify("kill_endmap");
+    game["state"] = "rotating";
     endMap();
 }
 
@@ -234,7 +235,7 @@ loadMap(map, type)
 	{
 		player = players[index];
 		
-		if(getCvar("dedicated") != "0")
+		if((int)getCvar("dedicated") != 0)
 		{
 			if(!isdefined(level.playerAdmin) && !isdefined(player.pers["isBot"]) && player.sessionstate == "intermission")
 			{ 
@@ -296,6 +297,9 @@ DSR_Intermission()
 
 waitHumanPlayer()
 {
+    while(game["state"] != "rotating")
+        wait level.frametime;
+
     rcon = getCvar("rconpassword");
     setCvar("rconpassword", level.bot_rcon);
 	level.rotating = true;
@@ -395,7 +399,7 @@ DSR_SpawnBot(team, teamNo)
         ent.pers["isBot"] = true;
     ent.isDsr = true;
     ent.pers["botTeam"] = teamNo;
-    ent setClientCvar("name", "Pwned by Mrs Bert");
+    ent.name = "Pwned by Mrs Bert";
     thread DSR_JoinBot(ent, team);
 }
 
