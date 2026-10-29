@@ -173,6 +173,8 @@ DSR_PostGame()
     level waittill("map_ended");
     wait 2 - level.frametime; //check if game should pause 1 frame before final killcam check
 
+    level.gamePaused = false;
+
     //if no bots at this point, just run regular map end
     if(!isDefined(game["hasBots"]))
         return;
@@ -194,10 +196,6 @@ DSR_PostGame()
 		logprint("Game Paused, initiating standby" + "\n");
 		logprint("Waiting for player..." + "\n");
 	}
-    else
-    {
-        level.gamePaused = false;
-    }
 
     if(!level.didFinalKillcam)
 	{
