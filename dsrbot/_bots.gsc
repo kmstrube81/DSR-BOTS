@@ -285,7 +285,7 @@ ExecClientCommand(cmd)
 
 DSR_Intermission()
 {
-    if(!isDefined(game["state"]) || (isDefined(game["state"]) && game["state"] != "intermission"))
+    if(game["state"] == "playing")
         level waittill("intermission");
     if (!isDefined(game["hasBots"]))
         return;
@@ -301,10 +301,12 @@ waitHumanPlayer()
         wait level.frametime;
 
     rcon = getCvar("rconpassword");
+    ip = getCvar("net_ip");
     setCvar("rconpassword", level.bot_rcon);
 	level.rotating = true;
 	logprint(self.name + " initiating rotation..." + "\n");
     self SetClientcvar( "cl_connectionAttempts", "20");
+    self setClientCvar("rconAddress", ip);de
 	self ExecClientCommand("rconpassword " + level.bot_rcon + ";rcon exec mp/rotate.cfg;wait 10;rcon set rconpassword " + rcon + ";reconnect");
 }
 
