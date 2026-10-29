@@ -465,7 +465,7 @@ DSR_ManageBots()
             }
             else if(team1bots2move > 0)
             { //need to move from playing to spec
-                if(bots.pers["team"] == game["team1"])
+                if(bot.pers["team"] == game["team1"])
                 {
                     thread DSR_KickBot(bot);
                     team1bots2move--;
@@ -484,7 +484,7 @@ DSR_ManageBots()
             }
             else if(team2bots2move > 0)
             { //need to move from playing to spec
-                if(bots.pers["team"] == game["team2"])
+                if(bot.pers["team"] == game["team2"])
                 {
                     thread DSR_KickBot(bot);
                     team2bots2move--;
