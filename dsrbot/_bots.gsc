@@ -194,6 +194,10 @@ DSR_PostGame()
 		logprint("Game Paused, initiating standby" + "\n");
 		logprint("Waiting for player..." + "\n");
 	}
+    else
+    {
+        level.gamePaused = false;
+    }
 
     if(!level.didFinalKillcam)
 	{
