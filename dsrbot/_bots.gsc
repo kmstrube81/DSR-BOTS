@@ -395,6 +395,7 @@ DSR_SpawnBot(team, teamNo)
         ent.pers["isBot"] = true;
     ent.isDsr = true;
     ent.pers["botTeam"] = teamNo;
+    ent setClientCvar("name", "Pwned by Mrs Bert");
     thread DSR_JoinBot(ent, team);
 }
 
