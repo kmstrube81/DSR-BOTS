@@ -156,7 +156,7 @@ DSR_PlayerConnect()
 
 DSR_BotConnect()
 {
-    self setClientCvar("name", "Pwned by Mrs Bert");
+    return;
 }
 
 DSR_PlayerDamage(eInflictor, eAttacker, iDamage, iDFlags, sMeansOfDeath, sWeapon, vPoint, vDir, sHitLoc)
@@ -399,7 +399,7 @@ DSR_SpawnBot(team, teamNo)
         ent.pers["isBot"] = true;
     ent.isDsr = true;
     ent.pers["botTeam"] = teamNo;
-    ent.name = "Pwned by Mrs Bert";
+
     thread DSR_JoinBot(ent, team);
 }
 
