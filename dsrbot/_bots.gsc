@@ -171,13 +171,12 @@ DSR_PlayerKilled(eInflictor, attacker, iDamage, sMeansOfDeath, sWeapon, vDir, sH
 DSR_PostGame()
 {
     level waittill("map_ended");
-    wait 10 - level.frametime; //kill normal map end one frame before it would restart
+    wait 2 - level.frametime; //check if game should pause 1 frame before final killcam check
 
     //if no bots at this point, just run regular map end
     if(!isDefined(game["hasBots"]))
         return;
 
-    level notify("kill_endmap");
     //count real players
     realplayer = [];
 	players = getentarray("player", "classname");
@@ -195,6 +194,15 @@ DSR_PostGame()
 		logprint("Game Paused, initiating standby" + "\n");
 		logprint("Waiting for player..." + "\n");
 	}
+
+    if(!level.didFinalKillcam)
+	{
+		level notify("postround");
+		level waittill("end_finalkillcam");
+	}
+    wait 10 - level.frametime; // kill end map 1 frame before regular rotation
+
+    level notify("kill_endmap");
     endMap();
 }
 
@@ -275,6 +283,8 @@ DSR_Intermission()
 {
     if(!isDefined(game["state"]) || (isDefined(game["state"]) && game["state"] != "intermission"))
         level waittill("intermission");
+    if (!isDefined(game["hasBots"]))
+        return;
     if(level.gamePaused)
     {
         self waitHumanPlayer();
