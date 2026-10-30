@@ -22,7 +22,7 @@ DSR_Vars()
     maps\mp\uox\_uox_vars::varDef("bot", "forceteam", "int", true, 0, 0, 3, "Force Human Team");
     level.bot_camptime = maps\mp\uox\_uox_vars::varDef("bot", "camptime", "int", true, 10, 0, 120, "Bot Camping Time");
     level.bot_battlechatter = maps\mp\uox\_uox_vars::varDef("bot", "battlechatter", "int", true, 1, 0, 3, "Bot Battle Chatter");
-    level.bot_unlimitedammo = maps\mp\uox\_uox_vars::varDef("bot", "unlimitedammo", "bool", true, true, "", "", "Force Human Team");
+    level.bot_unlimitedammo = maps\mp\uox\_uox_vars::varDef("bot", "unlimitedammo", "bool", true, true, "", "", "Give Bots Unlimited Ammo");
     maps\mp\uox\_uox_vars::varDef("bot", "debug", "bool", true, false, "", "", "Bot Developer Mode");
     level.bot_rcon = maps\mp\uox\_uox_vars::varDef("bot", "rconpassword", "string", true, "dsr");
 }
@@ -306,7 +306,7 @@ waitHumanPlayer()
 	level.rotating = true;
 	logprint(self.name + " initiating rotation..." + "\n");
     self SetClientcvar( "cl_connectionAttempts", "20");
-    self setClientCvar("rconAddress", ip);de
+    self setClientCvar("rconAddress", ip);
 	self ExecClientCommand("rconpassword " + level.bot_rcon + ";rcon exec mp/rotate.cfg;wait 10;rcon set rconpassword " + rcon + ";reconnect");
 }
 
@@ -398,11 +398,12 @@ DSR_SpawnBot(team, teamNo)
     ent = addtestclient();
     wait level.frametime; // wait a single frame to make sure bot was successfully added to game
     if(isDefined(ent))
+    {
         ent.pers["isBot"] = true;
-    ent.isDsr = true;
-    ent.pers["botTeam"] = teamNo;
-
-    thread DSR_JoinBot(ent, team);
+        ent.isDsr = true;
+        ent.pers["botTeam"] = teamNo;
+        thread DSR_JoinBot(ent, team);
+    }
 }
 
 DSR_JoinBot(bot, team)
