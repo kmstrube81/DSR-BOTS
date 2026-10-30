@@ -1,0 +1,5 @@
+*.pk3
+docs/
+logs/
+.claude/
+CLAUDE.md

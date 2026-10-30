@@ -24,16 +24,20 @@ DSR_Vars()
     level.bot_battlechatter = maps\mp\uox\_uox_vars::varDef("bot", "battlechatter", "int", true, 1, 0, 3, "Bot Battle Chatter");
     level.bot_unlimitedammo = maps\mp\uox\_uox_vars::varDef("bot", "unlimitedammo", "bool", true, true, "", "", "Give Bots Unlimited Ammo");
     maps\mp\uox\_uox_vars::varDef("bot", "debug", "bool", true, false, "", "", "Bot Developer Mode");
+    maps\mp\uox\_uox_vars::varDef("bot", "ai_debug", "int", true, 0, 0, 3, "Bot AI Debug Level");
     level.bot_rcon = maps\mp\uox\_uox_vars::varDef("bot", "rconpassword", "string", true, "dsr");
 }
 
+// Bot weapons precached per map, current nationalities only (weapon limit 128, stock included):
+//   american 15, british 15, russian 12, german 15, common 5
+//   max per map = 15 allies + 15 axis + 5 common = 35 bot weapons on top of the gametype's stock weapons
 DSR_Precache()
 {
     switch(game["allies"])
 	{
-		case "american":
+		case "american": // 15
 			//game["headicon_allies"] = "gfx/hud/headicon@american.tga";
-			/*precacheItem("us_botgrenade_mp");
+			precacheItem("us_botgrenade_mp");
 			precacheItem("us_botgrenade2_mp");
 			precacheItem("bot_bazooka_mp");
 			precacheItem("bot_m1carbine_walk2_mp");
@@ -47,12 +51,12 @@ DSR_Precache()
 			precacheItem("bot_m1carbine_stand_mp");
 			precacheItem("bot_thompson_stand_mp");
 			precacheItem("bot_bar_stand_mp");
-			precacheItem("bot_m1garand_stand_mp"); */
+			precacheItem("bot_m1garand_stand_mp");
 			break;
-	
-		case "british":
+
+		case "british": // 15
 			//game["headicon_allies"] = "gfx/hud/headicon@british.tga";
-			/*precacheItem("uk_botgrenade_mp");
+			precacheItem("uk_botgrenade_mp");
 			precacheItem("uk_botgrenade2_mp");
 			precacheItem("bot_bazooka_mp");
 			precacheItem("bot_sten_walk2_mp");
@@ -66,12 +70,12 @@ DSR_Precache()
 			precacheItem("bot_sten_stand_mp");
 			precacheItem("bot_thompson_stand_mp");
 			precacheItem("bot_enfield_stand_mp");
-			precacheItem("bot_bren_stand_mp");*/
+			precacheItem("bot_bren_stand_mp");
 			break;
-	
-		case "russian":
+
+		case "russian": // 12
 			//game["headicon_allies"] = "gfx/hud/headicon@russian.tga";
-			/*precacheItem("ru_botgrenade_mp");
+			precacheItem("ru_botgrenade_mp");
 			precacheItem("ru_botgrenade2_mp");
 			precacheItem("bot_bazooka_mp");
 			precacheItem("bot_svt40_walk2_mp");
@@ -82,15 +86,15 @@ DSR_Precache()
 			precacheItem("bot_mosin_nagant_close_mp");
 			precacheItem("bot_svt40_stand_mp");
 			precacheItem("bot_ppsh_stand_mp");
-			precacheItem("bot_mosin_nagant_stand_mp");*/
+			precacheItem("bot_mosin_nagant_stand_mp");
 			break;
 	}
 
 	switch(game["axis"])
 	{
-		case "german":
+		case "german": // 15
 			//game["headicon_axis"] = "gfx/hud/headicon@german.tga";
-			/*precacheItem("ge_botgrenade_mp");
+			precacheItem("ge_botgrenade_mp");
 			precacheItem("ge_botgrenade2_mp");
 			precacheItem("bot_panzerfaust_mp");
 			precacheItem("bot_mp40_walk2_mp");
@@ -104,16 +108,17 @@ DSR_Precache()
 			precacheItem("bot_mp40_stand_mp");
 			precacheItem("bot_mp44_stand_mp");
 			precacheItem("bot_kar98k_stand_mp");
-			precacheItem("bot_gewehr43_stand_mp");*/
+			precacheItem("bot_gewehr43_stand_mp");
 			break;
     }
-	
-   /* precacheItem("bot_melee_mp");
+
+    // common 5
+    precacheItem("bot_melee_mp");
     precacheItem("jumpdn_bot_mp");
     precacheItem("climbup_bot_mp");
 	precacheItem("mantle_bot_mp");
 	precacheItem("bot_binoculars_artillery_mp");
-    */
+
 	precacheString(&"MBOT_MAPNOTSUPPORT");
 	precacheString(&"MBOT_NOMORE");
 	precacheString(&"MBOT_SKILLSWITCH");
@@ -136,6 +141,7 @@ DSR_DefineMenus()
 DSR_StartGameType()
 {
     DSR_Vars();
+    DSR_InitWeapons();
 
     level.playerAdmin = undefined;
     level.gamePaused = false;
@@ -159,15 +165,119 @@ DSR_BotConnect()
     return;
 }
 
+// CODUO-X runs damage/killed callbacks in order, called (not threaded), and ignores return values
+// (_uox_callbacks.gsc Callback_PlayerDamage / Callback_PlayerKilled). DSR's run before the defaults,
+// so they can never veto damage or a kill, and must never wait: a wait here delays the default handler.
 DSR_PlayerDamage(eInflictor, eAttacker, iDamage, iDFlags, sMeansOfDeath, sWeapon, vPoint, vDir, sHitLoc)
 {
-	self endon("killed");
-	
 }
 
 DSR_PlayerKilled(eInflictor, attacker, iDamage, sMeansOfDeath, sWeapon, vDir, sHitLoc)
 {
-    return;
+    //runs before Default_PlayerKilled drops the current weapon
+    self DSR_SwapToStockWeapon();
+}
+
+/* *************************************************************************************************
+**** DSR_InitWeapons()
+****
+**** builds level.dsr_stockOf[variant] = stock weapon a dying player drops in place of a bot variant,
+**** "none" for action variants that have no corresponding weapon
+************************************************************************************************* */
+DSR_InitWeapons()
+{
+    level.dsr_stockOf = [];
+
+    weapons = [];
+    weapons[weapons.size] = "bar";
+    weapons[weapons.size] = "bren";
+    weapons[weapons.size] = "enfield";
+    weapons[weapons.size] = "gewehr43";
+    weapons[weapons.size] = "kar98k";
+    weapons[weapons.size] = "m1carbine";
+    weapons[weapons.size] = "m1garand";
+    weapons[weapons.size] = "mosin_nagant";
+    weapons[weapons.size] = "mp40";
+    weapons[weapons.size] = "mp44";
+    weapons[weapons.size] = "ppsh";
+    weapons[weapons.size] = "sten";
+    weapons[weapons.size] = "svt40";
+    weapons[weapons.size] = "thompson";
+
+    for(i = 0; i < weapons.size; i++)
+    {
+        stock = weapons[i] + "_mp";
+        level.dsr_stockOf["bot_" + weapons[i] + "_walk2_mp"] = stock;
+        level.dsr_stockOf["bot_" + weapons[i] + "_close_mp"] = stock;
+        level.dsr_stockOf["bot_" + weapons[i] + "_stand_mp"] = stock;
+    }
+
+    level.dsr_stockOf["ge_botgrenade_mp"] = "stielhandgranate_mp";
+    level.dsr_stockOf["ge_botgrenade2_mp"] = "stielhandgranate_mp";
+    level.dsr_stockOf["us_botgrenade_mp"] = "fraggrenade_mp";
+    level.dsr_stockOf["us_botgrenade2_mp"] = "fraggrenade_mp";
+    level.dsr_stockOf["uk_botgrenade_mp"] = "mk1britishfrag_mp";
+    level.dsr_stockOf["uk_botgrenade2_mp"] = "mk1britishfrag_mp";
+    level.dsr_stockOf["ru_botgrenade_mp"] = "rgd-33russianfrag_mp";
+    level.dsr_stockOf["ru_botgrenade2_mp"] = "rgd-33russianfrag_mp";
+    level.dsr_stockOf["bot_bazooka_mp"] = "bazooka_mp";
+    level.dsr_stockOf["us_botpanzer_mp"] = "bazooka_mp";
+    level.dsr_stockOf["bot_panzerfaust_mp"] = "panzerfaust_mp";
+
+    level.dsr_stockOf["bot_binoculars_artillery_mp"] = "none";
+    level.dsr_stockOf["bot_melee_mp"] = "none";
+    level.dsr_stockOf["jumpdn_bot_mp"] = "none";
+    level.dsr_stockOf["climbup_bot_mp"] = "none";
+    level.dsr_stockOf["mantle_bot_mp"] = "none";
+}
+
+/* *************************************************************************************************
+**** DSR_SwapToStockWeapon()
+****
+**** if self holds a bot variant, replace it with its stock weapon (or nothing) so the weapon dropped on
+**** death never puts a bot variant (and its bot animations) in a human's hands
+************************************************************************************************* */
+DSR_SwapToStockWeapon()
+{
+    current = self getCurrentWeapon();
+    if(!isDefined(current) || !isDefined(level.dsr_stockOf[current]))
+        return; //stock weapon or none, leave the default drop alone
+
+    stock = level.dsr_stockOf[current];
+    slotA = self getWeaponSlotWeapon("primary");
+    slotB = self getWeaponSlotWeapon("primaryb");
+    before = slotA + "," + slotB;
+    self takeAllWeapons();
+    //takeAllWeapons left the other slot's weapon to be dropped (Phase 0 test: jumpdn_bot_mp death dropped
+    //a thompson_mp held in the other slot), so empty both slots before giving the stock weapon
+    //VERIFY: setWeaponSlotWeapon(slot, "none") clears the slot without a script error
+    if(self getWeaponSlotWeapon("primary") != "none")
+        self setWeaponSlotWeapon("primary", "none");
+    if(self getWeaponSlotWeapon("primaryb") != "none")
+        self setWeaponSlotWeapon("primaryb", "none");
+    if(stock != "none")
+    {
+        self giveWeapon(stock);
+        self setSpawnWeapon(stock);
+    }
+
+    after = self getCurrentWeapon();
+    path = "default";
+    //VERIFY: if setSpawnWeapon does not change the current weapon at once, drop the stock weapon here;
+    //the default handler then drops whatever is current, which this player no longer owns
+    if(stock != "none" && after != stock)
+    {
+        self dropItem(stock);
+        path = "dsr";
+    }
+
+    if([[level.getVars]]("bot_ai_debug") >= 1)
+    {
+        slotA = self getWeaponSlotWeapon("primary");
+        slotB = self getWeaponSlotWeapon("primaryb");
+        logprint("DSR: deathswap " + self.name + " from=" + current + " to=" + stock + " current=" + after + " drop=" + path
+            + " slots=" + before + "->" + slotA + "," + slotB + "\n");
+    }
 }
 
 DSR_PostGame()
@@ -245,7 +355,7 @@ loadMap(map, type)
 				{
 					logprint(player.name + " initiating rotation..." + "\n");
 					player SetClientcvar( "cl_connectionAttempts", "40");
-					wait 0.05;
+					wait level.frametime;
 					player ExecClientCommand("rconpassword " + level.bot_rcon + ";rcon exec mp/kill.cfg;wait 300;rcon set rconpassword "+ rcon + ";reconnect");
 				}
 			}

@@ -50,7 +50,7 @@ set weapons walkingbot = bot_mp40_walk2_mp AND bot_m1carbine_walk2_mp AND bot_sv
 
 set weapons standadsbot = bot_kar98k_close_mp AND bot_svt40_close_mp AND bot_sten_close_mp AND bot_gewehr43_close_mp AND bot_thompson_close_mp AND bot_m1carbine_close_mp AND bot_m1garand_close_mp AND bot_bar_close_mp AND bot_mp40_close_mp AND bot_mp44_close_mp AND bot_mosin_nagant_close_mp  AND bot_ppsh_close_mp AND bot_svt40_close_mp AND bot_bren_close_mp AND bot_enfield_close_mp AND bot_bazooka_mp AND bot_panzerfaust_mp
 
-set weapons grenadebot = ge_botgrenade_mp AND us_botgrenade_mp AND uk_botgrenade_mp AND ru_botgrenade_mp AND fraggrenade_mp AND ge_botgrenade2_mp AND us_botgrenade2_mp AND uk_botgrenade2_mp AND ru_botgrenade2_mp
+set weapons grenadebot = ge_botgrenade_mp AND us_botgrenade_mp AND uk_botgrenade_mp AND ru_botgrenade_mp AND ge_botgrenade2_mp AND us_botgrenade2_mp AND uk_botgrenade2_mp AND ru_botgrenade2_mp
 
 set weapons jumpdownbot = jumpdn_bot_mp
 
@@ -327,19 +327,11 @@ STATE COMBAT
 		{
 			both pb_stand_grenade_idle // This should be an idle anim for holding pinapple type grenades
 		}
-		weaponclass flamethrower
-		{
-			both pb_combatrun_forward_loop_heavy // This should be an idle anim for holding pinapple type grenades
-		}
-		
 		default // two handed rifle type weapon
 		{
-			both pb_combatrun_forward_loop
-			//both pb_combatrun_forward_loop_unarmed
+			both pb_stand_alert
 		}
-		
 	}
-	
 	idlecr
 	{
 		// ATB ~
