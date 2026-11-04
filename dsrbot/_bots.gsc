@@ -18,7 +18,8 @@ DSR_Init()
 
 DSR_Vars()
 {
-    level.bot_skill = maps\mp\uox\_uox_vars::varDef("bot", "skill", "int", true, 7, 1, 10, "Bot Skill Level");
+    //0 = mixed: each bot draws its own skill from 5-9 (average 7) when it joins (dsr_motor DSR_ApplySkill)
+    level.bot_skill = maps\mp\uox\_uox_vars::varDef("bot", "skill", "int", true, 0, 0, 10, "Bot Skill Level (0 = mixed)");
     maps\mp\uox\_uox_vars::varDef("bot", "team1_num", "int", true, 0, 0, 63, "Number of Bots on Team 1");
     maps\mp\uox\_uox_vars::varDef("bot", "team2_num", "int", true, 0, 0, 63, "Number of Bots on Team 2");
     maps\mp\uox\_uox_vars::varDef("bot", "forceteam", "int", true, 0, 0, 3, "Force Human Team");
@@ -177,6 +178,7 @@ DSR_BotConnect()
 // so they can never veto damage or a kill, and must never wait: a wait here delays the default handler.
 DSR_PlayerDamage(eInflictor, eAttacker, iDamage, iDFlags, sMeansOfDeath, sWeapon, vPoint, vDir, sHitLoc)
 {
+    self dsrbot\_dsr_sense::DSR_OnDamaged(eAttacker, iDamage);
 }
 
 DSR_PlayerKilled(eInflictor, attacker, iDamage, sMeansOfDeath, sWeapon, vDir, sHitLoc)

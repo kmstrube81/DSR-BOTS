@@ -14,12 +14,14 @@
 DSR_NavPrepare()
 {
     level.dsr_navReady = false;
+    level.dsr_navDone = false; //set when this finishes either way (DSR_OnSpawned waits for it)
     level.dsr_cellSize = 512;
     level.dsr_gridOffset = 65536; //keeps cell coordinates positive so (int) truncation acts as floor
 
     if(!waypoints\select_map::choose() || !isDefined(level.wp) || level.wp.size < 2)
     {
         logprint("DSR: nav unavailable map=" + getCvar("mapname") + "; bots keep stock behaviour\n");
+        level.dsr_navDone = true;
         return;
     }
     level.dsr_wpCount = level.wp.size;
@@ -43,6 +45,7 @@ DSR_NavPrepare()
     //A* state (6.3): mark[i] = gen*2 when open, gen*2+1 when closed; older gens mean unvisited
     level.dsr_asGen = 0;
     level.dsr_asMark = [];
+    level.dsr_asCrowd = []; //[node] = the search generation whose teammates' paths use it (DSR_MarkCrowd)
     level.dsr_asG = [];
     level.dsr_asParent = [];
     level.dsr_heapNode = [];
@@ -54,8 +57,148 @@ DSR_NavPrepare()
     level.dsr_pathOk = 0;
     level.dsr_pathFail = 0;
 
+    DSR_AddReverseEdges();
+    DSR_FindGoalSet();
+
     level.dsr_navReady = true;
-    logprint("DSR: nav ready map=" + getCvar("mapname") + " nodes=" + level.dsr_wpCount + " camp=" + level.dsr_campWps.size + "\n");
+    level.dsr_navDone = true;
+    logprint("DSR: nav ready map=" + getCvar("mapname") + " nodes=" + level.dsr_wpCount + " camp=" + level.dsr_campWps.size
+        + " goals=" + level.dsr_goalWps.size + " reversed=" + level.dsr_reverseEdges + "\n");
+}
+
+/* *************************************************************************************************
+**** DSR_AddReverseEdges()
+****
+**** the waypoint files are mostly recorded as one-way chains (a -> b with no b -> a), so a bot standing one
+**** node past a goal had to go round the whole map to get back to it. Maintainer, 2026-11-03: in memory
+**** only (the files are untouched), every walked edge between nodes at the same elevation (within 24
+**** units, neither end a jump, fall or ladder node) gets its reverse. Drops and climbs stay one-way.
+************************************************************************************************* */
+DSR_AddReverseEdges()
+{
+    added = 0;
+    for(a = 0; a < level.dsr_wpCount; a++)
+    {
+        wa = level.wp[a];
+        if(wa.type == "j" || wa.type == "f" || wa.type == "l")
+            continue;
+        //only a's own edges from the file: reverses added to a by earlier nodes are already two-way
+        count = wa.next.size;
+        for(j = 0; j < count; j++)
+        {
+            b = wa.next[j];
+            wb = level.wp[b];
+            if(wb.type == "j" || wb.type == "f" || wb.type == "l")
+                continue;
+            dz = wb.origin[2] - wa.origin[2];
+            if(dz > 24 || dz < -24)
+                continue;
+            back = false;
+            for(k = 0; k < wb.next.size; k++)
+            {
+                if(wb.next[k] == a)
+                {
+                    back = true;
+                    break;
+                }
+            }
+            if(back)
+                continue;
+            level.wp[b].next[level.wp[b].next.size] = a;
+            if(isDefined(level.wp[b].nextCount))
+                level.wp[b].nextCount = level.wp[b].next.size;
+            added++;
+        }
+        if(a % 400 == 399)
+            wait level.frametime;
+    }
+    level.dsr_reverseEdges = added;
+}
+
+/* *************************************************************************************************
+**** DSR_FindGoalSet()
+****
+**** the waypoint files have one-way edges (spawn chains, drops, dead ends): on the stock maps 15-40% of the
+**** nodes are outside the largest set of nodes that can all reach each other, and a search for one of them
+**** fails only after expanding everything reachable. This finds that set (nodes both reachable from and
+**** able to reach a sample node; up to 4 samples, keeping the largest) into level.dsr_goalWps and the
+**** level.dsr_wpGoal[node] flags. Patrol and flank goals come from it; a path may start anywhere.
+************************************************************************************************* */
+DSR_FindGoalSet()
+{
+    prev = [];
+    for(i = 0; i < level.dsr_wpCount; i++)
+        prev[i] = [];
+    for(i = 0; i < level.dsr_wpCount; i++)
+    {
+        next = level.wp[i].next;
+        for(j = 0; j < next.size; j++)
+            prev[next[j]][prev[next[j]].size] = i;
+        if(i % 400 == 399)
+            wait level.frametime;
+    }
+
+    best = [];
+    for(t = 0; t < 4 && best.size * 2 < level.dsr_wpCount; t++)
+    {
+        a = randomInt(level.dsr_wpCount);
+        fwd = DSR_Reach(a, undefined);
+        back = DSR_Reach(a, prev);
+        scc = [];
+        for(i = 0; i < level.dsr_wpCount; i++)
+        {
+            if(isDefined(fwd[i]) && isDefined(back[i]))
+                scc[scc.size] = i;
+        }
+        if(scc.size > best.size)
+            best = scc;
+    }
+    if(!best.size)
+    {
+        //no node reaches another: fall back to every node
+        for(i = 0; i < level.dsr_wpCount; i++)
+            best[i] = i;
+    }
+
+    level.dsr_goalWps = best;
+    level.dsr_wpGoal = [];
+    for(i = 0; i < best.size; i++)
+        level.dsr_wpGoal[best[i]] = true;
+}
+
+//nodes reachable from a along the edges (prev undefined) or against them (prev = reverse edge lists), as
+//flags seen[node] = true
+DSR_Reach(a, prev)
+{
+    seen = [];
+    seen[a] = true;
+    stack = [];
+    stack[0] = a;
+    top = 1;
+    count = 0;
+    while(top > 0)
+    {
+        top--;
+        n = stack[top];
+        if(isDefined(prev))
+            next = prev[n];
+        else
+            next = level.wp[n].next;
+        for(j = 0; j < next.size; j++)
+        {
+            s = next[j];
+            if(!isDefined(seen[s]))
+            {
+                seen[s] = true;
+                stack[top] = s;
+                top++;
+            }
+        }
+        count++;
+        if(count % 400 == 0)
+            wait level.frametime;
+    }
+    return seen;
 }
 
 DSR_GridKey(pos)
@@ -160,19 +303,93 @@ DSR_NearestVisibleWp(pos)
 /* *************************************************************************************************
 **** DSR_PickPatrolGoal(from)
 ****
-**** a random node at least 1024 units away (best of 6 tries), so patrols cover the map
+**** self = bot. A random node at least 1024 units away (best of 6 tries), so patrols cover the map; or, when
+**** a flank was asked for (dsr_flankWanted), a flank node next to that target
 ************************************************************************************************* */
 DSR_PickPatrolGoal(from)
 {
+    self.dsr_objGoalWp = undefined;
+    if(isDefined(self.dsr_flankWanted))
+    {
+        self.dsr_flankWanted = undefined;
+        target = self.dsr_flankTarget;
+        if(isDefined(target) && self dsrbot\_dsr_sense::DSR_IsValidTarget(target))
+        {
+            goal = self DSR_PickFlankGoal(target, from);
+            if(goal >= 0)
+                return goal;
+        }
+    }
+
+    //the objective (_dsr_obj), when the gametype has one for this bot
+    goal = self dsrbot\_dsr_obj::DSR_ObjPickGoal(from);
+    if(goal >= 0)
+    {
+        if(level.dsr_objective != "bel")
+            self.dsr_objGoalWp = goal;
+        return goal;
+    }
+
     org = level.wp[from].origin;
-    goal = randomInt(level.dsr_wpCount);
+    goals = level.dsr_goalWps;
+    goal = goals[randomInt(goals.size)];
     for(i = 0; i < 6; i++)
     {
         if(goal != from && distanceSquared(org, level.wp[goal].origin) > 1024 * 1024)
             break;
-        goal = randomInt(level.dsr_wpCount);
+        goal = goals[randomInt(goals.size)];
     }
     return goal;
+}
+
+/* *************************************************************************************************
+**** DSR_PickFlankGoal(target, from)
+****
+**** self = bot. The cheap flank (maintainer, Phase 2): of the 16 nodes nearest the target, at least 192
+**** units from it, the one whose direction from the target is furthest from the side the engaged bots
+**** are on, so this bot comes in from another angle. With nobody engaged, it is measured against this
+**** bot's own side, so it swings around. -1 if no node qualifies. No traces; the real flank (paths that
+**** avoid the target's view) is plan Phase 6.
+************************************************************************************************* */
+DSR_PickFlankGoal(target, from)
+{
+    tpos = target.origin;
+    side = (0, 0, 0);
+    players = getentarray("player", "classname");
+    for(i = 0; i < players.size; i++)
+    {
+        p = players[i];
+        if(p != self && p dsrbot\_dsr_sense::DSR_IsEngagedWith(target))
+            side = side + vectorNormalize((p.origin[0] - tpos[0], p.origin[1] - tpos[1], 0));
+    }
+    if(side[0] == 0 && side[1] == 0)
+        side = (self.origin[0] - tpos[0], self.origin[1] - tpos[1], 0);
+    if(side[0] == 0 && side[1] == 0)
+        return -1;
+    side = vectorNormalize(side);
+
+    cand = DSR_NearbyCandidates(tpos, 16);
+    best = -1;
+    bestDot = 2;
+    for(i = 0; i < cand.size; i++)
+    {
+        n = cand[i];
+        if(n == from || !isDefined(level.dsr_wpGoal[n]))
+            continue;
+        o = level.wp[n].origin;
+        flat = (o[0] - tpos[0], o[1] - tpos[1], 0);
+        if(distanceSquared(flat, (0, 0, 0)) < 192 * 192)
+            continue;
+        dot = vectorDot(vectorNormalize(flat), side);
+        if(dot < bestDot)
+        {
+            best = n;
+            bestDot = dot;
+        }
+    }
+    if(best >= 0 && [[level.getVars]]("bot_ai_debug") >= 2)
+        logprint("DSR: flank " + self.name + " target=" + target.name + " goal=" + best + " dot=" + bestDot + "\n");
+    return best;
 }
 
 /* *************************************************************************************************
@@ -252,8 +469,29 @@ DSR_AStarNext()
         level.dsr_searchStart = bot.dsr_pathStart;
         level.dsr_searchExpanded = 0;
 
+        //nodes this bot was blocked at in the last few seconds (motor DSR_Avoid)
+        level.dsr_searchAvoid = [];
+        if(isDefined(bot.dsr_avoid))
+        {
+            now = getTime();
+            for(i = 0; i < bot.dsr_avoid.size; i++)
+            {
+                if(bot.dsr_avoidT[i] > now)
+                    level.dsr_searchAvoid[level.dsr_searchAvoid.size] = bot.dsr_avoid[i];
+            }
+        }
+
         level.dsr_asGen++;
         level.dsr_heapSize = 0;
+        //route variety (maintainer): a cost jitter seeded per bot and per request, and the teammates' paths
+        level.dsr_searchSeed = (bot getEntityNumber() * 7919 + bot.dsr_pathReq * 104729) % 100003;
+        //a run to a planted bomb (dsr_objDirect, _dsr_obj) stays near the shortest path: 10% jitter and no
+        //teammate penalty (maintainer)
+        level.dsr_searchJitter = 0.4;
+        if(isDefined(bot.dsr_objDirect))
+            level.dsr_searchJitter = 0.1;
+        else
+            DSR_MarkCrowd(bot);
         start = level.dsr_searchStart;
         level.dsr_asG[start] = 0;
         level.dsr_asParent[start] = -1;
@@ -262,6 +500,23 @@ DSR_AStarNext()
         return true;
     }
     return false;
+}
+
+//teamplay: marks the nodes of the paths the searching bot's walking teammates are following
+DSR_MarkCrowd(bot)
+{
+    if(!level.uox_teamplay)
+        return;
+    players = getentarray("player", "classname");
+    for(i = 0; i < players.size; i++)
+    {
+        p = players[i];
+        if(p == bot || !isDefined(p.dsr_active) || p.pers["team"] != bot.pers["team"]
+            || p.dsr_state != "moving" || !isDefined(p.dsr_path))
+            continue;
+        for(k = 0; k < p.dsr_path.size; k++)
+            level.dsr_asCrowd[p.dsr_path[k]] = level.dsr_asGen;
+    }
 }
 
 /* *************************************************************************************************
@@ -310,7 +565,19 @@ DSR_AStarStep(budget)
         for(i = 0; i < wp.next.size; i++)
         {
             s = wp.next[i];
-            g = level.dsr_asG[node] + distance(wp.origin, level.wp[s].origin) + penalty;
+            //jitter: each node costs 0-40% more, differently for each bot and request, so bots spread over
+            //near-equal routes; only ever more, so the distance heuristic stays a lower bound
+            jitter = 1 + level.dsr_searchJitter * ((s * 1103 + level.dsr_searchSeed) % 97) / 97.0;
+            g = level.dsr_asG[node] + distance(wp.origin, level.wp[s].origin) * jitter + penalty;
+            //a node on a teammate's current path: prefer another way (not the goal, which they may share)
+            if(s != goal && isDefined(level.dsr_asCrowd[s]) && level.dsr_asCrowd[s] == level.dsr_asGen)
+                g += 256;
+            //a node another player blocked: expensive rather than closed, so a dead end still has a way out
+            for(j = 0; j < level.dsr_searchAvoid.size; j++)
+            {
+                if(level.dsr_searchAvoid[j] == s)
+                    g += 1500;
+            }
             if(isDefined(level.dsr_asMark[s]) && level.dsr_asMark[s] >= open)
             {
                 if(level.dsr_asMark[s] == closed || g >= level.dsr_asG[s])

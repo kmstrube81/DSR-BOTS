@@ -15,6 +15,12 @@ DSR_TelemetryReset()
     level.dsr_tmExp = 0;
     level.dsr_tmExpMax = 0;
     level.dsr_tracesRefused = 0;
+    level.dsr_tmAcquire = 0;
+    level.dsr_tmBursts = 0;
+    level.dsr_tmShots = 0;
+    level.dsr_tmReloads = 0;
+    level.dsr_tmFlanks = 0;
+    level.dsr_tmGiveUps = 0;
 }
 
 /* *************************************************************************************************
@@ -43,7 +49,10 @@ DSR_TelemetryFrame()
 ****   DSR: telemetry bots=<active> frames=<n> traces=<avg>/<max> cap=<cap> refused=<n>
 ****        thinks=<avg>/<max> astar=<avg>/<max> cap=<cap> queue=<n> paths=<ok>/<failed> drift=<units>
 **** avg and max are per frame over the last second; paths are totals for the map; drift is the largest
-**** distance between an active bot and its dsr_org, and should stay near 0
+**** distance between an active bot and its dsr_org, and should stay near 0. Phase 2 appends
+****        acquire=<n> bursts=<n> shots=<n> reloads=<n> flanks=<n> giveups=<n>
+**** totals for the last second: new enemies, bursts loaded, rounds fired, reloads started, flank requests,
+**** targets given up after missed bursts
 ************************************************************************************************* */
 DSR_Telemetry()
 {
@@ -74,7 +83,9 @@ DSR_Telemetry()
             + " thinks=" + DSR_Avg(level.dsr_tmThinks, n) + "/" + level.dsr_tmThinksMax
             + " astar=" + DSR_Avg(level.dsr_tmExp, n) + "/" + level.dsr_tmExpMax + " cap=" + level.dsr_astarCap
             + " queue=" + level.dsr_pathQueue.size + " paths=" + level.dsr_pathOk + "/" + level.dsr_pathFail
-            + " drift=" + drift + "\n");
+            + " drift=" + drift
+            + " acquire=" + level.dsr_tmAcquire + " bursts=" + level.dsr_tmBursts + " shots=" + level.dsr_tmShots
+            + " reloads=" + level.dsr_tmReloads + " flanks=" + level.dsr_tmFlanks + " giveups=" + level.dsr_tmGiveUps + "\n");
     }
     DSR_TelemetryReset();
 }

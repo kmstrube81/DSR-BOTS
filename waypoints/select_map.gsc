@@ -6,6 +6,7 @@ choose()
 	switch(level.vMapName)
 	{
 		case "mp_carentan":
+		case "mp_uo_carentan": //same layout as the CoD1 map (UO spawn points all fit these waypoints)
 			waypoints\mp_carentan_tdm::load_waypoints();
 			level.bot_wptype = false;
 			println("Loaded.\n");
@@ -54,6 +55,7 @@ choose()
 			return true;
 	
 		case "mp_hurtgen":
+		case "mp_uo_hurtgen": //same layout as the CoD1 map (UO spawn points all fit these waypoints)
 			waypoints\mp_hurtgen_tdm::load_waypoints();
 			level.bot_wptype = false;
 			println("Loaded.\n");
@@ -66,6 +68,7 @@ choose()
 			return true;
 	
 		case "mp_dawnville":
+		case "mp_uo_dawnville": //same layout as the CoD1 map (UO spawn points all fit these waypoints)
 			waypoints\mp_dawnville_tdm::load_waypoints();
 			level.bot_wptype = false;
 			println("Loaded.\n");
