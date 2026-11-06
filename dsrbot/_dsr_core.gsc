@@ -4,6 +4,9 @@
 **** Think dispatcher, trace budget, schedule and task engine, bot_ai_level gating (plan 5.2, 5.5).
 ****   bot_ai_level 1: bots patrol the waypoint graph; no targeting, no shooting
 ****   bot_ai_level 2: MeatBot parity: they see enemies, face them, fire stand / crouch bursts and reload
+****   bot_ai_level 3: HL schedules: they pursue a hidden enemy to where it was last seen (EstablishLineOfFire),
+****                   look around there (Sweep) and give up, wait it out when the way fails (Standoff), and
+****                   use the first quick-chat lines (_dsr_squad)
 ************************************************************************************************* */
 
 /* *************************************************************************************************
@@ -19,6 +22,7 @@ DSR_CoreVars()
     maps\mp\uox\_uox_vars::varDef("bot", "ai_astarpersec", "int", true, 1280, 20, 20000, "Bot AI A* Expansions Per Second");
     maps\mp\uox\_uox_vars::varDef("bot", "ai_engagemax", "int", true, 2, 0, 16, "Bot AI Max Bots Engaging One Target");
     maps\mp\uox\_uox_vars::varDef("bot", "ai_replandist", "int", true, 256, 32, 4096, "Bot AI Goal Move That Triggers A Replan");
+    maps\mp\uox\_uox_vars::varDef("bot", "ai_chatcooldown", "int", true, 4, 0, 60, "Bot AI Team Chatter Cooldown");
 }
 
 /* *************************************************************************************************
@@ -167,7 +171,7 @@ DSR_Trace(start, end, hitCharacters, ignoreEnt)
 ****   2. drop the schedule if one of its interrupt conditions is set
 ****   3. select a schedule if there is none
 ****   4. advance the task; a finished task starts the next one in the same think
-**** Phase 2 has no fail schedules (Phase 3): a failed task just selects again.
+**** A failed task switches to the schedule's fail schedule (SET_FAIL_SCHEDULE), else selects again.
 ************************************************************************************************* */
 DSR_BotThink()
 {
@@ -180,7 +184,10 @@ DSR_BotThink()
     if(level.dsr_aiLevel >= 2)
     {
         self dsrbot\_dsr_sense::DSR_GatherConditions();
-        self DSR_Standoff();
+        self DSR_PointBlank();
+        //HL's leader line on a new sighting; the team cooldown keeps it to one bot (_dsr_squad)
+        if(level.dsr_aiLevel >= 3 && self.dsr_cond["NEW_ENEMY"] && self.dsr_cond["SEE_ENEMY"])
+            self dsrbot\_dsr_squad::DSR_Speak("statements", 1);
     }
     else
         self dsrbot\_dsr_sense::DSR_ClearConditions();
@@ -217,7 +224,10 @@ DSR_BotThink()
         {
             if(!isDefined(self.dsr_schedReason))
                 self.dsr_schedReason = "fail " + tasks[self.dsr_taskIdx];
-            self DSR_SetSchedule(self DSR_GetSchedule());
+            if(isDefined(self.dsr_failSched))
+                self DSR_SetSchedule(self.dsr_failSched);
+            else
+                self DSR_SetSchedule(self DSR_GetSchedule());
             return;
         }
         self.dsr_taskIdx++;
@@ -296,13 +306,60 @@ DSR_DefineSchedules()
     s = DSR_AddTask(s, "MELEE", 0);
     level.dsr_sched["Melee"] = s;
 
-    //a point-blank standoff the melee didn't end (DSR_Standoff): turn, fire one real round, and that round kills
+    //a point-blank standoff the melee didn't end (DSR_PointBlank): turn, fire one real round, and that round kills
     s = DSR_NewSched();
     s = DSR_AddTask(s, "STOP_MOVING", "now");
     s = DSR_AddTask(s, "FACE_ENEMY", "fire");
-    s = DSR_AddTask(s, "STANDOFF_SHOT", 0);
+    s = DSR_AddTask(s, "POINTBLANK_SHOT", 0);
     s = DSR_AddInterrupt(s, "ENEMY_DEAD");
+    level.dsr_sched["PointBlank"] = s;
+
+    //Phase 3 (bot_ai_level 3). EstablishLineOfFire: walk to where the enemy was last seen (or is, when it is
+    //only partly visible or out of range) until there is a shot. Failing that: Standoff
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "SET_FAIL_SCHEDULE", "Standoff");
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "GET_PATH_TO_ENEMY", 0);
+    s = DSR_AddTask(s, "RUN_PATH", 0);
+    s = DSR_AddInterrupt(s, "NEW_ENEMY");
+    s = DSR_AddInterrupt(s, "ENEMY_DEAD");
+    s = DSR_AddInterrupt(s, "ENEMY_LOST");
+    s = DSR_AddInterrupt(s, "CAN_FIRE");
+    s = DSR_AddInterrupt(s, "CAN_MELEE");
+    s = DSR_AddInterrupt(s, "NO_AMMO");
+    level.dsr_sched["EstablishLineOfFire"] = s;
+
+    //HL's Standoff: hold still facing where the enemy was for 1-3 s and wait for it to show
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "FACE_ENEMY", "look");
+    s = DSR_AddTask(s, "WAIT_FACE_ENEMY", -1);
+    s = DSR_AddInterrupt(s, "NEW_ENEMY");
+    s = DSR_AddInterrupt(s, "ENEMY_DEAD");
+    s = DSR_AddInterrupt(s, "ENEMY_LOST");
+    s = DSR_AddInterrupt(s, "CAN_FIRE");
+    s = DSR_AddInterrupt(s, "CAN_MELEE");
+    s = DSR_AddInterrupt(s, "LIGHT_DAMAGE");
+    s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
     level.dsr_sched["Standoff"] = s;
+
+    //HL's Sweep: look around twice. After a kill it ends with "area secure"; after a pursuit that found
+    //nothing the bot gives up on the enemy (SWEEP_END)
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "SWEEP", 0);
+    s = DSR_AddTask(s, "WAIT", 1);
+    s = DSR_AddTask(s, "SWEEP", 0);
+    s = DSR_AddTask(s, "WAIT", 1);
+    s = DSR_AddTask(s, "SWEEP_END", 0);
+    s = DSR_AddInterrupt(s, "NEW_ENEMY");
+    s = DSR_AddInterrupt(s, "SEE_ENEMY");
+    s = DSR_AddInterrupt(s, "CAN_FIRE");
+    s = DSR_AddInterrupt(s, "CAN_MELEE");
+    s = DSR_AddInterrupt(s, "LIGHT_DAMAGE");
+    s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
+    s = DSR_AddInterrupt(s, "OBJ_ACT");
+    level.dsr_sched["Sweep"] = s;
 }
 
 DSR_NewSched()
@@ -365,6 +422,7 @@ DSR_SetSchedule(name)
     }
     self dsrbot\_dsr_motor::DSR_CeaseFire();
     self dsrbot\_dsr_obj::DSR_ObjActionEnd(); //leaving a plant / defuse unfinished
+    self.dsr_failSched = undefined;
     self.dsr_sched = name;
     self.dsr_schedLast = name;
     self.dsr_schedReason = undefined;
@@ -375,22 +433,23 @@ DSR_SetSchedule(name)
 /* *************************************************************************************************
 **** DSR_GetSchedule()
 ****
-**** port of CHGrunt::GetSchedule (plan 5.5), Phase 2 lines only; each line is gated by bot_ai_level
+**** port of CHGrunt::GetSchedule (plan 5.5), Phase 2 and 3 lines; each line is gated by bot_ai_level.
+**** No squads before Phase 5, so every bot acts as HL's squadless grunt (leader checks skipped).
 ************************************************************************************************* */
 DSR_GetSchedule()
 {
     if(level.dsr_aiLevel < 2)
         return "Patrol";
 
-    //a point-blank standoff comes first: overlapping players don't take bullet hits (DSR_Standoff)
-    if(isDefined(self.dsr_standoffShot))
+    //a point-blank standoff comes first: overlapping players don't take bullet hits (DSR_PointBlank)
+    if(isDefined(self.dsr_pointBlankShot))
     {
-        if(self dsrbot\_dsr_sense::DSR_IsValidTarget(self.dsr_standoffShot))
+        if(self dsrbot\_dsr_sense::DSR_IsValidTarget(self.dsr_pointBlankShot))
         {
-            self.dsr_enemy = self.dsr_standoffShot;
-            return "Standoff";
+            self.dsr_enemy = self.dsr_pointBlankShot;
+            return "PointBlank";
         }
-        self.dsr_standoffShot = undefined;
+        self.dsr_pointBlankShot = undefined;
     }
 
     //objectives (_dsr_obj): an urgent defuse comes before everything; otherwise a plant or defuse is
@@ -407,6 +466,12 @@ DSR_GetSchedule()
         if([[level.getVars]]("bot_ai_debug") >= 2 && isDefined(self.dsr_enemy))
             logprint("DSR: enemy " + self.name + " dead " + self.dsr_enemy.name + "\n");
         self dsrbot\_dsr_sense::DSR_ForgetEnemy();
+        if(level.dsr_aiLevel >= 3)
+        {
+            self dsrbot\_dsr_squad::DSR_Speak("statements", 2); //enemy down
+            if(randomInt(2))
+                return "Sweep";
+        }
         return "Patrol";
     }
     if(!isDefined(self.dsr_enemy))
@@ -424,11 +489,24 @@ DSR_GetSchedule()
     if(self.dsr_cond["SEE_ENEMY"] && !self.dsr_friendBlock)
     {
         //only partly visible (round or over cover) or out of range: no shot from here, so don't stand and
-        //stare: keep moving and work round to it (maintainer, Phase 2)
-        //(bel allies running from axis players don't flank them)
+        //stare. Level 3: walk at it until there is a shot (maintainer: engaged bots pursue, bots over the
+        //engage cap keep the flank goal). Level 2: keep moving and work round to it (maintainer, Phase 2)
+        //(bel allies running from axis players don't chase or flank them)
         if(!self dsrbot\_dsr_obj::DSR_ObjPassive(self.dsr_enemy))
+        {
+            if(level.dsr_aiLevel >= 3)
+                return "EstablishLineOfFire";
             self dsrbot\_dsr_sense::DSR_NoteFlank(self.dsr_enemy);
+        }
         return "Patrol";
+    }
+    //level 3, hidden and not yet forgotten: go to where it was last seen; once there (or when the way there
+    //failed) look around and give up
+    if(level.dsr_aiLevel >= 3 && self.dsr_cond["ENEMY_OCCLUDED"] && !self dsrbot\_dsr_obj::DSR_ObjPassive(self.dsr_enemy))
+    {
+        if(isDefined(self.dsr_elofReached))
+            return "Sweep";
+        return "EstablishLineOfFire";
     }
     return "CombatFace"; //a teammate in the way, or hidden and not yet forgotten (DSR_GatherConditions)
 }
@@ -457,7 +535,13 @@ DSR_RunTask()
         case "RELOAD":          return self DSR_Task_RELOAD(starting);
         case "OBJ_ACTION":      return self dsrbot\_dsr_obj::DSR_Task_OBJ_ACTION(starting);
         case "MELEE":           return self DSR_Task_MELEE(starting);
-        case "STANDOFF_SHOT":   return self DSR_Task_STANDOFF_SHOT(starting);
+        case "POINTBLANK_SHOT": return self DSR_Task_POINTBLANK_SHOT(starting);
+        case "SET_FAIL_SCHEDULE": return self DSR_Task_SET_FAIL_SCHEDULE(param);
+        case "WAIT":            return self DSR_Task_WAIT(param);
+        case "GET_PATH_TO_ENEMY": return self DSR_Task_GET_PATH_TO_ENEMY(starting);
+        case "RUN_PATH":        return self DSR_Task_RUN_PATH(starting);
+        case "SWEEP":           return self DSR_Task_SWEEP(starting);
+        case "SWEEP_END":       return self DSR_Task_SWEEP_END();
     }
     return "fail";
 }
@@ -470,6 +554,11 @@ DSR_RunTask()
 //request (dsr_flankPending, from DSR_NoteFlank) drops the current walk or camp so the next goal is the flank
 DSR_Task_PATROL(starting)
 {
+    if(isDefined(self.dsr_roleChat) && self.dsr_roleChat == "attack")
+    {
+        self.dsr_roleChat = undefined;
+        self dsrbot\_dsr_squad::DSR_Speak("responses", 3); //on my way
+    }
     if(starting)
     {
         self.dsr_aiming = undefined;
@@ -549,57 +638,57 @@ DSR_Task_MELEE(starting)
 }
 
 /* *************************************************************************************************
-**** DSR_Standoff()
+**** DSR_PointBlank()
 ****
 **** self = bot, each think after the conditions (bot_ai_level >= 2). Maintainer: an enemy pressed up against
 **** a bot must not stay there wiggling (overlapping players don't take bullet hits). After 1-2 s with
-**** the same enemy within 80 units (DSR_StandoffTarget): within 72 the bot melees it now (the Melee
+**** the same enemy within 80 units (DSR_PointBlankTarget): within 72 the bot melees it now (the Melee
 **** schedule, no roll); farther, or when that melee didn't land, it kills it with its gun the same way the
-**** melee does: the Standoff schedule turns to it and fires one real round (stock fire sound and muzzle
+**** melee does: the PointBlank schedule turns to it and fires one real round (stock fire sound and muzzle
 **** flash), and that round kills it through the gametype's damage callback, since a bullet into an
 **** overlapping player doesn't register.
 ************************************************************************************************* */
-DSR_Standoff()
+DSR_PointBlank()
 {
-    p = self dsrbot\_dsr_sense::DSR_StandoffTarget();
+    p = self dsrbot\_dsr_sense::DSR_PointBlankTarget();
     if(!isDefined(p))
         return;
     d = (p.origin[0] - self.origin[0], p.origin[1] - self.origin[1], 0);
-    if(distanceSquared(d, (0, 0, 0)) < 72 * 72 && !isDefined(self.dsr_standoffMeleed))
+    if(distanceSquared(d, (0, 0, 0)) < 72 * 72 && !isDefined(self.dsr_pointBlankMeleed))
     {
-        self.dsr_standoffMeleed = true; //once: if it doesn't land, the next standoff check shoots
+        self.dsr_pointBlankMeleed = true; //once: if it doesn't land, the next standoff check shoots
         self.dsr_enemy = p;
         self.dsr_lastEnemy = p;
         self.dsr_cond["CAN_MELEE"] = true;
         if(!isDefined(self.dsr_sched) || self.dsr_sched != "Melee")
         {
-            self.dsr_schedReason = "standoff";
+            self.dsr_schedReason = "pointblank";
             self.dsr_sched = undefined;
         }
         return;
     }
-    if(isDefined(self.dsr_standoffShot))
+    if(isDefined(self.dsr_pointBlankShot))
         return; //already turning to shoot it
-    self.dsr_standoffShot = p;
+    self.dsr_pointBlankShot = p;
     self.dsr_enemy = p;
     self.dsr_lastEnemy = p;
-    self.dsr_schedReason = "standoff";
+    self.dsr_schedReason = "pointblank";
     self.dsr_sched = undefined;
 }
 
 /* *************************************************************************************************
-**** STANDOFF_SHOT
+**** POINTBLANK_SHOT
 ****
 **** fires one real round from the fire variant FACE_ENEMY raised (a free round if the magazine is empty),
 **** then kills the standoff enemy with it if it is still alive and within 100 units: damage through the
 **** gametype callback, as MELEE does. Gives up waiting for the shot after 1 s and kills anyway.
 ************************************************************************************************* */
-DSR_Task_STANDOFF_SHOT(starting)
+DSR_Task_POINTBLANK_SHOT(starting)
 {
-    target = self.dsr_standoffShot;
+    target = self.dsr_pointBlankShot;
     if(!self dsrbot\_dsr_sense::DSR_IsValidTarget(target))
     {
-        self.dsr_standoffShot = undefined;
+        self.dsr_pointBlankShot = undefined;
         return "fail";
     }
     if(starting)
@@ -613,14 +702,14 @@ DSR_Task_STANDOFF_SHOT(starting)
         return "running";
 
     self dsrbot\_dsr_motor::DSR_CeaseFire();
-    self.dsr_standoffShot = undefined;
+    self.dsr_pointBlankShot = undefined;
     if(distanceSquared(self.origin, target.origin) < 100 * 100)
     {
         weapon = self.dsr_fireWeapon;
         if(!isDefined(weapon))
             weapon = self.dsr_weapon + "_mp";
         if([[level.getVars]]("bot_ai_debug") >= 1)
-            logprint("DSR: standoff " + self.name + " killed " + target.name + " dist=" + (int)(distance(self.origin, target.origin)) + "\n");
+            logprint("DSR: pointblank " + self.name + " killed " + target.name + " dist=" + (int)(distance(self.origin, target.origin)) + "\n");
         dir = vectorNormalize(target.origin - self.origin);
         target thread [[level.callbackPlayerDamage]](self, self, 200, 0, "MOD_RIFLE_BULLET", weapon,
             target.origin + (0, 0, 40), dir, "torso_upper");
@@ -686,12 +775,131 @@ DSR_Task_FACE_ENEMY(param, starting)
     return "running";
 }
 
+//seconds < 0: a random 1-3 s (Standoff)
 DSR_Task_WAIT_FACE_ENEMY(seconds, starting)
 {
     self.dsr_aiming = true;
+    if(starting)
+    {
+        if(seconds < 0)
+            self.dsr_taskData = 1000 + randomInt(2001);
+        else
+            self.dsr_taskData = seconds * 1000;
+    }
+    if(getTime() - self.dsr_taskStart >= self.dsr_taskData)
+        return "done";
+    return "running";
+}
+
+/* *************************************************************************************************
+**** Phase 3 tasks (plan 5.5)
+************************************************************************************************* */
+
+//the schedule a failed task of this schedule switches to (cleared by DSR_SetSchedule)
+DSR_Task_SET_FAIL_SCHEDULE(name)
+{
+    self.dsr_failSched = name;
+    return "done";
+}
+
+DSR_Task_WAIT(seconds)
+{
     if(getTime() - self.dsr_taskStart >= seconds * 1000)
         return "done";
     return "running";
+}
+
+/* *************************************************************************************************
+**** GET_PATH_TO_ENEMY
+****
+**** asks A* for a path from the nearest visible node to the goal-set node nearest where the enemy was last
+**** seen. Fails (and counts as having got there, so the bot sweeps and gives up next) when that is the node
+**** it is on, when there is no node near, or when A* finds no way. A bot that set out 3 times without
+**** getting there gives up the same way.
+************************************************************************************************* */
+DSR_Task_GET_PATH_TO_ENEMY(starting)
+{
+    if(starting)
+    {
+        if(!isDefined(self.dsr_enemyLastPos) || self.dsr_elofTries >= 3)
+        {
+            self.dsr_elofReached = true;
+            return "fail";
+        }
+        start = self dsrbot\_dsr_nav::DSR_NearestVisibleWp(self.origin);
+        if(start == -2)
+        {
+            self.dsr_taskStarting = true; //trace budget refused: try again next think
+            return "running";
+        }
+        goal = dsrbot\_dsr_nav::DSR_NearestGoalWp(self.dsr_enemyLastPos);
+        if(start < 0 || goal < 0 || goal == start)
+        {
+            self.dsr_elofReached = true;
+            return "fail";
+        }
+        self.dsr_elofTries++;
+        self dsrbot\_dsr_nav::DSR_RequestPath(start, goal);
+        if([[level.getVars]]("bot_ai_debug") >= 2)
+            logprint("DSR: elof " + self.name + " enemy=" + self.dsr_enemy.name + " from=" + start + " to=" + goal
+                + " dist=" + (int)(distance(self.origin, self.dsr_enemyLastPos)) + " try=" + self.dsr_elofTries + "\n");
+    }
+    if(self.dsr_pathState == "ready")
+        return "done";
+    if(self.dsr_pathState == "failed")
+    {
+        self.dsr_elofReached = true;
+        return "fail";
+    }
+    return "running";
+}
+
+//walks the path (motor "elof": onto its first node, then along it). Done when the walk ends; within 256
+//units of the last known position counts as there
+DSR_Task_RUN_PATH(starting)
+{
+    if(starting)
+        self dsrbot\_dsr_motor::DSR_MotorCommand("elof");
+    if(!self.dsr_motorDone)
+        return "running";
+    self.dsr_replan = true; //the patrol starts again from the nearest node afterwards
+    if(isDefined(self.dsr_enemyLastPos) && distanceSquared(self.origin, self.dsr_enemyLastPos) < 256 * 256)
+        self.dsr_elofReached = true;
+    return "done";
+}
+
+//turns the view 60-120 degrees to a random side; done when it gets there, or after 1.5 s
+DSR_Task_SWEEP(starting)
+{
+    if(starting)
+    {
+        self.dsr_aiming = undefined;
+        turn = 60 + randomInt(61);
+        if(randomInt(2))
+            turn = 0 - turn;
+        self.dsr_lookYaw = dsrbot\_dsr_motor::DSR_AngleNormalize(self.dsr_curYaw + turn);
+        self.dsr_lookPitch = 0;
+    }
+    if(self dsrbot\_dsr_motor::DSR_AimSettled() || getTime() - self.dsr_taskStart > 1500)
+        return "done";
+    return "running";
+}
+
+//end of a sweep: an enemy still remembered was not found, so the bot gives up on it (plan accept: pursue,
+//sweep, give up); with no enemy (after a kill) it reports the area secure
+DSR_Task_SWEEP_END()
+{
+    if(isDefined(self.dsr_enemy))
+    {
+        if([[level.getVars]]("bot_ai_debug") >= 2)
+            logprint("DSR: enemy " + self.name + " swept " + self.dsr_enemy.name + "\n");
+        self dsrbot\_dsr_sense::DSR_ForgetEnemy();
+        self.dsr_lastEnemy = undefined;
+        self.dsr_enemyLastPos = undefined;
+        return "done";
+    }
+    self dsrbot\_dsr_squad::DSR_Speak("statements", 4); //area secure
+    return "done";
 }
 
 DSR_Task_CHECK_FIRE()
@@ -927,6 +1135,11 @@ DSR_PatrolThink()
 DSR_ObjArrive()
 {
     self.dsr_objGoalWp = undefined;
+    if(isDefined(self.dsr_roleChat) && self.dsr_roleChat == "defend" && self.dsr_objMode == "hold")
+    {
+        self.dsr_roleChat = undefined;
+        self dsrbot\_dsr_squad::DSR_Speak("statements", 3); //in position
+    }
     go = self dsrbot\_dsr_obj::DSR_ObjApproach();
     if(go < 0)
         return; //trace budget refused: try again next think

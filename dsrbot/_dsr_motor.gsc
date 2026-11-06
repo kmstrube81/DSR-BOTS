@@ -566,6 +566,14 @@ DSR_MotorRun(cmd)
         case "path":
             self DSR_FollowPath();
             break;
+        case "elof":
+            //a pursuit starts wherever the fight left the bot: onto the path's first node, then along it
+            if(self DSR_WalkTo(level.wp[self.dsr_path[0]].origin))
+            {
+                self.dsr_wp = self.dsr_path[0];
+                self DSR_FollowPath();
+            }
+            break;
         case "hold":
             self DSR_Hold(self.dsr_motorTime);
             break;

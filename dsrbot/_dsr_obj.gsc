@@ -208,6 +208,11 @@ DSR_PickRole()
         self.dsr_objRole = "defend";
     else
         self.dsr_objRole = "attack";
+    //the bot whose role puts its team one or two up on that role says so (Phase 3, maintainer): an attacker
+    //"On my way" when it sets off, a defender "In position" when it reaches its first hold spot
+    self.dsr_roleChat = undefined;
+    if((self.dsr_objRole == "attack" && attack >= defend) || (self.dsr_objRole == "defend" && defend >= attack))
+        self.dsr_roleChat = self.dsr_objRole;
     if([[level.getVars]]("bot_ai_debug") >= 2)
         logprint("DSR: obj " + self.name + " role=" + self.dsr_objRole + " team=" + self.pers["team"]
             + " attack=" + attack + " defend=" + defend + "\n");

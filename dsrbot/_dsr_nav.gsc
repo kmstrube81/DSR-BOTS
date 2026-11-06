@@ -303,6 +303,23 @@ DSR_NearestWp(pos)
 }
 
 /* *************************************************************************************************
+**** DSR_NearestGoalWp(pos)
+****
+**** nearest node of the mutually reachable goal set (DSR_FindGoalSet) among the 8 closest to pos, or -1.
+**** No traces: a pursuit goal only has to be near where the enemy was.
+************************************************************************************************* */
+DSR_NearestGoalWp(pos)
+{
+    cand = DSR_NearbyCandidates(pos, 8);
+    for(i = 0; i < cand.size; i++)
+    {
+        if(isDefined(level.dsr_wpGoal[cand[i]]))
+            return cand[i];
+    }
+    return -1;
+}
+
+/* *************************************************************************************************
 **** DSR_NearestVisibleWp(pos)
 ****
 **** self = bot. Nearest of the 4 closest nodes with a clear waist-height trace. Returns -2 when the trace

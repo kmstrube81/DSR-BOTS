@@ -72,9 +72,11 @@ DSR_IsValidTarget(player)
 ************************************************************************************************* */
 DSR_SenseReset()
 {
-    self.dsr_standoff = undefined;
-    self.dsr_standoffMeleed = undefined;
-    self.dsr_standoffShot = undefined;
+    self.dsr_pointBlank = undefined;
+    self.dsr_pointBlankMeleed = undefined;
+    self.dsr_pointBlankShot = undefined;
+    self.dsr_elofReached = undefined;
+    self.dsr_elofTries = 0;
     self.dsr_enemy = undefined;
     self.dsr_lastEnemy = undefined;
     self.dsr_enemyLastPos = undefined;
@@ -180,8 +182,11 @@ DSR_GatherConditions()
                 see = true;
                 self.dsr_enemyLastPos = self.dsr_enemy.origin;
                 self.dsr_enemyLastSeen = getTime();
+                //seen again: a new pursuit starts from here if it hides again
+                self.dsr_elofReached = undefined;
+                self.dsr_elofTries = 0;
             }
-            else if(getTime() - self.dsr_enemyLastSeen > self.dsr_skMemory)
+            else if(getTime() - self.dsr_enemyLastSeen > self DSR_MemoryMs())
             {
                 if([[level.getVars]]("bot_ai_debug") >= 2)
                     logprint("DSR: enemy " + self.name + " lost " + self.dsr_enemy.name + "\n");
@@ -196,6 +201,8 @@ DSR_GatherConditions()
     if(isDefined(self.dsr_enemy) && (!isDefined(self.dsr_lastEnemy) || self.dsr_enemy != self.dsr_lastEnemy))
     {
         newEnemy = true;
+        self.dsr_elofReached = undefined;
+        self.dsr_elofTries = 0;
         self.dsr_reactUntil = getTime() + self.dsr_skReact;
         self.dsr_missBursts = 0;
         level.dsr_tmAcquire++;
@@ -249,14 +256,14 @@ DSR_MeleeRoll()
 }
 
 /* *************************************************************************************************
-**** DSR_StandoffTarget()
+**** DSR_PointBlankTarget()
 ****
 **** self = bot. The enemy it has been pressed up against for 1-2 s (random, so the two bots of a standoff
 **** don't both act on the same think), then every 1.5 s while it lasts; undefined otherwise. Pressed up:
 **** within 80 units (2D; 64 up or down), and either overlapping (under 32: no wall fits between) or the
 **** enemy it currently sees (a wall between them otherwise)
 ************************************************************************************************* */
-DSR_StandoffTarget()
+DSR_PointBlankTarget()
 {
     best = undefined;
     bestD = 0;
@@ -281,21 +288,30 @@ DSR_StandoffTarget()
     }
     if(!isDefined(best))
     {
-        self.dsr_standoff = undefined;
-        self.dsr_standoffMeleed = undefined;
+        self.dsr_pointBlank = undefined;
+        self.dsr_pointBlankMeleed = undefined;
         return undefined;
     }
-    if(!isDefined(self.dsr_standoff) || self.dsr_standoff != best)
+    if(!isDefined(self.dsr_pointBlank) || self.dsr_pointBlank != best)
     {
-        self.dsr_standoff = best;
-        self.dsr_standoffMeleed = undefined;
-        self.dsr_standoffAt = getTime() + 1000 + randomInt(1000);
+        self.dsr_pointBlank = best;
+        self.dsr_pointBlankMeleed = undefined;
+        self.dsr_pointBlankAt = getTime() + 1000 + randomInt(1000);
         return undefined;
     }
-    if(getTime() < self.dsr_standoffAt)
+    if(getTime() < self.dsr_pointBlankAt)
         return undefined;
-    self.dsr_standoffAt = getTime() + 1500;
+    self.dsr_pointBlankAt = getTime() + 1500;
     return best;
+}
+
+//how long a hidden enemy is remembered: the skill memory, plus at level 3 the pursuit (EstablishLineOfFire,
+//Sweep), which normally ends sooner by giving up (SWEEP_END). VERIFY 12 s is enough for a pursuit
+DSR_MemoryMs()
+{
+    if(level.dsr_aiLevel >= 3)
+        return self.dsr_skMemory + 12000;
+    return self.dsr_skMemory;
 }
 
 DSR_ForgetEnemy()
