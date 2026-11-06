@@ -174,8 +174,14 @@ DSR_BotThink()
     if(!isDefined(self.dsr_active))
         return;
 
+    //a weapon picked up off the ground (random use presses) goes straight back
+    self dsrbot\_dsr_motor::DSR_WeaponGuard();
+
     if(level.dsr_aiLevel >= 2)
+    {
         self dsrbot\_dsr_sense::DSR_GatherConditions();
+        self DSR_Standoff();
+    }
     else
         self dsrbot\_dsr_sense::DSR_ClearConditions();
 
@@ -289,6 +295,14 @@ DSR_DefineSchedules()
     s = DSR_AddTask(s, "STOP_MOVING", "now");
     s = DSR_AddTask(s, "MELEE", 0);
     level.dsr_sched["Melee"] = s;
+
+    //a point-blank standoff the melee didn't end (DSR_Standoff): turn, fire one real round, and that round kills
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "FACE_ENEMY", "fire");
+    s = DSR_AddTask(s, "STANDOFF_SHOT", 0);
+    s = DSR_AddInterrupt(s, "ENEMY_DEAD");
+    level.dsr_sched["Standoff"] = s;
 }
 
 DSR_NewSched()
@@ -368,6 +382,17 @@ DSR_GetSchedule()
     if(level.dsr_aiLevel < 2)
         return "Patrol";
 
+    //a point-blank standoff comes first: overlapping players don't take bullet hits (DSR_Standoff)
+    if(isDefined(self.dsr_standoffShot))
+    {
+        if(self dsrbot\_dsr_sense::DSR_IsValidTarget(self.dsr_standoffShot))
+        {
+            self.dsr_enemy = self.dsr_standoffShot;
+            return "Standoff";
+        }
+        self.dsr_standoffShot = undefined;
+    }
+
     //objectives (_dsr_obj): an urgent defuse comes before everything; otherwise a plant or defuse is
     //started whenever the bot has no enemy
     if(self.dsr_objUrgent)
@@ -432,6 +457,7 @@ DSR_RunTask()
         case "RELOAD":          return self DSR_Task_RELOAD(starting);
         case "OBJ_ACTION":      return self dsrbot\_dsr_obj::DSR_Task_OBJ_ACTION(starting);
         case "MELEE":           return self DSR_Task_MELEE(starting);
+        case "STANDOFF_SHOT":   return self DSR_Task_STANDOFF_SHOT(starting);
     }
     return "fail";
 }
@@ -468,6 +494,13 @@ DSR_Task_PATROL(starting)
             logprint("DSR: obj " + self.name + " replan\n");
         self.dsr_objGoalWp = undefined;
         DSR_SetState("start");
+    }
+    //the same while camping at the objective: end the camp (DSR_Hold) and move on
+    else if(self.dsr_state == "camp" && !self.dsr_motorDone && self dsrbot\_dsr_obj::DSR_ObjReplan())
+    {
+        if([[level.getVars]]("bot_ai_debug") >= 2)
+            logprint("DSR: obj " + self.name + " replan from camp\n");
+        self.dsr_holdYield = true;
     }
     self DSR_PatrolThink();
     return "running";
@@ -516,6 +549,86 @@ DSR_Task_MELEE(starting)
 }
 
 /* *************************************************************************************************
+**** DSR_Standoff()
+****
+**** self = bot, each think after the conditions (bot_ai_level >= 2). Maintainer: an enemy pressed up against
+**** a bot must not stay there wiggling (overlapping players don't take bullet hits). After 1-2 s with
+**** the same enemy within 80 units (DSR_StandoffTarget): within 72 the bot melees it now (the Melee
+**** schedule, no roll); farther, or when that melee didn't land, it kills it with its gun the same way the
+**** melee does: the Standoff schedule turns to it and fires one real round (stock fire sound and muzzle
+**** flash), and that round kills it through the gametype's damage callback, since a bullet into an
+**** overlapping player doesn't register.
+************************************************************************************************* */
+DSR_Standoff()
+{
+    p = self dsrbot\_dsr_sense::DSR_StandoffTarget();
+    if(!isDefined(p))
+        return;
+    d = (p.origin[0] - self.origin[0], p.origin[1] - self.origin[1], 0);
+    if(distanceSquared(d, (0, 0, 0)) < 72 * 72 && !isDefined(self.dsr_standoffMeleed))
+    {
+        self.dsr_standoffMeleed = true; //once: if it doesn't land, the next standoff check shoots
+        self.dsr_enemy = p;
+        self.dsr_lastEnemy = p;
+        self.dsr_cond["CAN_MELEE"] = true;
+        if(!isDefined(self.dsr_sched) || self.dsr_sched != "Melee")
+        {
+            self.dsr_schedReason = "standoff";
+            self.dsr_sched = undefined;
+        }
+        return;
+    }
+    if(isDefined(self.dsr_standoffShot))
+        return; //already turning to shoot it
+    self.dsr_standoffShot = p;
+    self.dsr_enemy = p;
+    self.dsr_lastEnemy = p;
+    self.dsr_schedReason = "standoff";
+    self.dsr_sched = undefined;
+}
+
+/* *************************************************************************************************
+**** STANDOFF_SHOT
+****
+**** fires one real round from the fire variant FACE_ENEMY raised (a free round if the magazine is empty),
+**** then kills the standoff enemy with it if it is still alive and within 100 units: damage through the
+**** gametype callback, as MELEE does. Gives up waiting for the shot after 1 s and kills anyway.
+************************************************************************************************* */
+DSR_Task_STANDOFF_SHOT(starting)
+{
+    target = self.dsr_standoffShot;
+    if(!self dsrbot\_dsr_sense::DSR_IsValidTarget(target))
+    {
+        self.dsr_standoffShot = undefined;
+        return "fail";
+    }
+    if(starting)
+    {
+        if(self.dsr_mag < 1)
+            self.dsr_mag = 1;
+        self dsrbot\_dsr_motor::DSR_StartBurst(1);
+        self.dsr_taskData = getTime() + 1000;
+    }
+    if(isDefined(self.dsr_firing) && getTime() < self.dsr_taskData)
+        return "running";
+
+    self dsrbot\_dsr_motor::DSR_CeaseFire();
+    self.dsr_standoffShot = undefined;
+    if(distanceSquared(self.origin, target.origin) < 100 * 100)
+    {
+        weapon = self.dsr_fireWeapon;
+        if(!isDefined(weapon))
+            weapon = self.dsr_weapon + "_mp";
+        if([[level.getVars]]("bot_ai_debug") >= 1)
+            logprint("DSR: standoff " + self.name + " killed " + target.name + " dist=" + (int)(distance(self.origin, target.origin)) + "\n");
+        dir = vectorNormalize(target.origin - self.origin);
+        target thread [[level.callbackPlayerDamage]](self, self, 200, 0, "MOD_RIFLE_BULLET", weapon,
+            target.origin + (0, 0, 40), dir, "torso_upper");
+    }
+    return "done";
+}
+
+/* *************************************************************************************************
 **** STOP_MOVING("now" | "peek")
 ****
 **** halts the bot where it is; waits for a jump, fall or ladder to finish first. "peek" (maintainer,
@@ -537,7 +650,16 @@ DSR_Task_STOP_MOVING(param, starting)
     if(getTime() < self.dsr_stopAt && self.dsr_moving)
         return "running";
     if(!self dsrbot\_dsr_motor::DSR_MotorStop())
-        return "running";
+    {
+        //a jump, fall or climb takes well under 3 s; longer means its flag was left set by a move that was
+        //cut off, which would hold this bot here for good (it stops shooting and can't be unstuck)
+        if(getTime() - self.dsr_taskStart < 3000)
+            return "running";
+        if([[level.getVars]]("bot_ai_debug") >= 1)
+            logprint("DSR: special stuck " + self.name + " wp=" + self dsrbot\_dsr_motor::DSR_WpText() + "\n");
+        self.dsr_special = undefined;
+        self dsrbot\_dsr_motor::DSR_MotorStop();
+    }
     self.dsr_replan = true;
     return "done";
 }
@@ -776,7 +898,14 @@ DSR_PatrolThink()
             break;
 
         case "approach":
-            //walked off the graph onto the objective itself: stay on it for a while
+            //walked off the graph onto the objective itself: stay on it for a while, unless the objective has
+            //moved on meanwhile (it took the flag: carry it home now)
+            pos = self dsrbot\_dsr_obj::DSR_GetObjectiveGoal();
+            if(isDefined(pos) && distanceSquared(self.origin, pos) > 128 * 128)
+            {
+                DSR_SetState("idle");
+                return;
+            }
             self.dsr_motorTime = 3 + randomFloat(3);
             DSR_SetState("camp");
             self dsrbot\_dsr_motor::DSR_MotorCommand("hold");

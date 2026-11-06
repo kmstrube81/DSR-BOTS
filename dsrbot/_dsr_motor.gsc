@@ -242,6 +242,54 @@ DSR_FixWeapon(stock)
 }
 
 /* *************************************************************************************************
+**** DSR_WeaponGuard()
+****
+**** self = bot, from DSR_BotThink. A test client presses use at random, so it picks up weapons lying on the
+**** ground, and a stock weapon in a bot's hands has no bot animations (maintainer). When either slot holds a
+**** weapon that is not a bot weapon, it gets its own back: DSR_SetFireMode takes all weapons and gives the
+**** right one. If the pickup swapped out its own weapon, that bot variant now lies on the ground for a human
+**** to pick up, so it is deleted. Only a foreign weapon counts: the hold pose's bot_binoculars_mp is not in
+**** either primary slot, so an empty pair of slots is normal.
+************************************************************************************************* */
+DSR_WeaponGuard()
+{
+    if(isDefined(self.dsr_special) || !isDefined(self.dsr_fireWeapon) || !isDefined(self.dsr_fireMode))
+        return;
+    own = self.dsr_fireWeapon;
+    primary = self getWeaponSlotWeapon("primary");
+    primaryb = self getWeaponSlotWeapon("primaryb");
+    foreign = undefined;
+    if(primary != "none" && !DSR_IsBotWeapon(primary))
+        foreign = primary;
+    else if(primaryb != "none" && !DSR_IsBotWeapon(primaryb))
+        foreign = primaryb;
+    if(!isDefined(foreign))
+        return;
+
+    if([[level.getVars]]("bot_ai_debug") >= 1)
+        logprint("DSR: weaponguard " + self.name + " took=" + foreign + " slots=" + primary + "," + primaryb + " own=" + own + "\n");
+
+    self.dsr_fireWeapon = undefined; //makes DSR_SetFireMode give it again
+    self DSR_SetFireMode(self.dsr_fireMode, self.dsr_fireSpecial);
+
+    //the bot variant it dropped for the pickup
+    if(primary != own && primaryb != own)
+    {
+        dropped = getentarray("weapon_" + own, "classname");
+        for(i = 0; i < dropped.size; i++)
+        {
+            if(distanceSquared(dropped[i].origin, self.origin) < 256 * 256)
+                dropped[i] delete();
+        }
+    }
+}
+
+DSR_IsBotWeapon(w)
+{
+    return isDefined(level.dsr_stockOf[w]) || w == "bot_binoculars_mp";
+}
+
+/* *************************************************************************************************
 **** DSR_BotStart()
 ****
 **** self = bot, spawned with its stock loadout. Links it to a new script_origin, switches to the run
@@ -429,6 +477,8 @@ DSR_SwapToStockWeapon()
 ************************************************************************************************* */
 DSR_SetFireMode(mode, special)
 {
+    if(mode == "special")
+        self.dsr_fireSpecial = special; //for DSR_WeaponGuard to give it back
     if(mode == "special")
         weapon = special;
     else if(mode == "run")
@@ -773,7 +823,7 @@ DSR_WaitBlocked(pos, blocker)
             limit = 3000; //covers its walk back to the node it came from and the step aside
         else if(blocker.dsr_moving)
             limit = 2000;
-        else if(blocker.dsr_motorCmd == "hold" && !blocker.dsr_motorDone)
+        else if(isDefined(blocker.dsr_motorCmd) && blocker.dsr_motorCmd == "hold" && !blocker.dsr_motorDone)
         {
             //camping in the way: it cuts the camp short (DSR_Hold) and walks on
             blocker.dsr_holdYield = true;

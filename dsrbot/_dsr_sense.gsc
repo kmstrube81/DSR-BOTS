@@ -72,6 +72,9 @@ DSR_IsValidTarget(player)
 ************************************************************************************************* */
 DSR_SenseReset()
 {
+    self.dsr_standoff = undefined;
+    self.dsr_standoffMeleed = undefined;
+    self.dsr_standoffShot = undefined;
     self.dsr_enemy = undefined;
     self.dsr_lastEnemy = undefined;
     self.dsr_enemyLastPos = undefined;
@@ -243,6 +246,56 @@ DSR_MeleeRoll()
         return false;
     self.dsr_meleeNext = now + 1000;
     return randomInt(100) < 25 + 5 * (self.dsr_skill - 5);
+}
+
+/* *************************************************************************************************
+**** DSR_StandoffTarget()
+****
+**** self = bot. The enemy it has been pressed up against for 1-2 s (random, so the two bots of a standoff
+**** don't both act on the same think), then every 1.5 s while it lasts; undefined otherwise. Pressed up:
+**** within 80 units (2D; 64 up or down), and either overlapping (under 32: no wall fits between) or the
+**** enemy it currently sees (a wall between them otherwise)
+************************************************************************************************* */
+DSR_StandoffTarget()
+{
+    best = undefined;
+    bestD = 0;
+    players = getentarray("player", "classname");
+    for(i = 0; i < players.size; i++)
+    {
+        p = players[i];
+        if(!self DSR_IsValidTarget(p))
+            continue;
+        d = (p.origin[0] - self.origin[0], p.origin[1] - self.origin[1], 0);
+        dz = p.origin[2] - self.origin[2];
+        dd = distanceSquared(d, (0, 0, 0));
+        if(dd > 80 * 80 || dz > 64 || dz < -64)
+            continue;
+        if(dd >= 32 * 32 && (!self.dsr_cond["SEE_ENEMY"] || self.dsr_enemy != p))
+            continue;
+        if(!isDefined(best) || dd < bestD)
+        {
+            best = p;
+            bestD = dd;
+        }
+    }
+    if(!isDefined(best))
+    {
+        self.dsr_standoff = undefined;
+        self.dsr_standoffMeleed = undefined;
+        return undefined;
+    }
+    if(!isDefined(self.dsr_standoff) || self.dsr_standoff != best)
+    {
+        self.dsr_standoff = best;
+        self.dsr_standoffMeleed = undefined;
+        self.dsr_standoffAt = getTime() + 1000 + randomInt(1000);
+        return undefined;
+    }
+    if(getTime() < self.dsr_standoffAt)
+        return undefined;
+    self.dsr_standoffAt = getTime() + 1500;
+    return best;
 }
 
 DSR_ForgetEnemy()

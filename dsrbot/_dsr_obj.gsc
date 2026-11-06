@@ -32,6 +32,85 @@ DSR_ObjStart()
     level.dsr_plantedAt = [];
     if(level.dsr_objective == "bomb")
         maps\mp\uox\_uox_loops::addToLoop(level, "medium", ::DSR_BombWatch, "DSR_BombWatch");
+    if(level.dsr_objective == "ctf" || level.dsr_objective == "commandpost" || level.dsr_objective == "retrieval")
+        maps\mp\uox\_uox_loops::addToLoop(level, "medium", ::DSR_TouchTriggers, "DSR_TouchTriggers");
+}
+
+/* *************************************************************************************************
+**** DSR_TouchTriggers()
+****
+**** level medium loop (4/s) in ctf, commandpost and retrieval. The engine fires a trigger for a player
+**** from that player's own movement; a bot riding its dsr_org never moves itself, so flag pickups, flag
+**** captures, command post zones and retrieval pickups never fire for it, even while it stands inside.
+**** isTouching does work for it (the bomb plant uses it), so for every active bot inside one of these
+**** triggers this sends the trigger the same "trigger" notify, with the bot, that the engine would; CODUO-X's
+**** own handlers (_uox_loops addToWaitTills) then do the rest. A retrieval pickup is a trigger_use, which
+**** the engine fires on the use key: the bot standing on it counts as pressing it.
+************************************************************************************************* */
+DSR_TouchTriggers()
+{
+    if(!DSR_ObjActive())
+        return;
+    triggers = [];
+    switch(level.dsr_objective)
+    {
+        case "ctf":
+            flags = [];
+            flags[0] = level.allies_flag;
+            flags[1] = level.axis_flag;
+            for(i = 0; i < flags.size; i++)
+            {
+                f = flags[i];
+                if(!isDefined(f))
+                    continue;
+                triggers[triggers.size] = f.trigger;
+                triggers[triggers.size] = f.mobile_trigger;
+                triggers[triggers.size] = f.goal;
+            }
+            break;
+        case "commandpost":
+            if(isDefined(level.flags))
+                triggers = level.flags;
+            break;
+        case "retrieval":
+            DSR_ReWatchStart();
+            if(isDefined(level.retrieval_objective))
+            {
+                for(i = 0; i < level.retrieval_objective.size; i++)
+                {
+                    if(DSR_ReDone(i))
+                        continue;
+                    o = level.retrieval_objective[i];
+                    triggers[triggers.size] = o.trigger;
+                    triggers[triggers.size] = o.goal;
+                }
+            }
+            break;
+    }
+    if(!triggers.size)
+        return;
+
+    players = getentarray("player", "classname");
+    for(i = 0; i < players.size; i++)
+    {
+        bot = players[i];
+        if(!isDefined(bot.dsr_active) || bot.sessionstate != "playing")
+            continue;
+        for(j = 0; j < triggers.size; j++)
+        {
+            t = triggers[j];
+            if(isDefined(t) && bot isTouching(t))
+            {
+                //logged once a second per bot at most
+                if([[level.getVars]]("bot_ai_debug") >= 2 && (!isDefined(bot.dsr_touchLogAt) || getTime() >= bot.dsr_touchLogAt))
+                {
+                    bot.dsr_touchLogAt = getTime() + 1000;
+                    logprint("DSR: touch " + bot.name + " trigger=" + j + "\n");
+                }
+                t notify("trigger", bot);
+            }
+        }
+    }
 }
 
 //level medium loop, bomb modes: when each site's bomb was planted (CODUO-X keeps no per-site time)
@@ -77,6 +156,8 @@ DSR_ObjSpawn()
     self.dsr_objSite = undefined;
     self.dsr_objPos = undefined;
     self.dsr_objPickPos = undefined;
+    self.dsr_objHoldWp = undefined;
+    self.dsr_objLastHold = undefined;
     self.dsr_objUrgent = false;
     self DSR_ObjActionEnd();
     if(!isDefined(level.dsr_objective))
@@ -86,9 +167,7 @@ DSR_ObjSpawn()
     {
         case "ctf":
         case "commandpost":
-            self.dsr_objRole = "attack";
-            if(randomInt(2))
-                self.dsr_objRole = "defend";
+            self DSR_PickRole();
             break;
         case "bomb":
             self.dsr_objSite = "A";
@@ -96,6 +175,42 @@ DSR_ObjSpawn()
                 self.dsr_objSite = "B";
             break;
     }
+}
+
+/* *************************************************************************************************
+**** DSR_PickRole()
+****
+**** ctf / commandpost: attack or defend, a coin flip unless it would put the team's roles more than 2 apart
+**** (maintainer): with 3 attacking and 2 defending a bot may still attack (4 to 2), not with 4 to 2.
+**** Independent coin flips could leave a whole team defending.
+************************************************************************************************* */
+DSR_PickRole()
+{
+    attack = 0;
+    defend = 0;
+    players = getentarray("player", "classname");
+    for(i = 0; i < players.size; i++)
+    {
+        p = players[i];
+        //every live teammate with a role (at a round start they are all still starting up, not dsr_active yet)
+        if(p == self || p.sessionstate != "playing" || p.pers["team"] != self.pers["team"] || !isDefined(p.dsr_objRole))
+            continue;
+        if(p.dsr_objRole == "attack")
+            attack++;
+        else
+            defend++;
+    }
+    if(defend - attack >= 2)
+        self.dsr_objRole = "attack";
+    else if(attack - defend >= 2)
+        self.dsr_objRole = "defend";
+    else if(randomInt(2))
+        self.dsr_objRole = "defend";
+    else
+        self.dsr_objRole = "attack";
+    if([[level.getVars]]("bot_ai_debug") >= 2)
+        logprint("DSR: obj " + self.name + " role=" + self.dsr_objRole + " team=" + self.pers["team"]
+            + " attack=" + attack + " defend=" + defend + "\n");
 }
 
 /* *************************************************************************************************
@@ -108,8 +223,12 @@ DSR_GetObjectiveGoal()
 {
     pos = undefined;
     self.dsr_objDirect = undefined; //set when the goal is a planted bomb: shortest path, no variety (nav)
+    self.dsr_objIgnore = undefined; //a solid model at the goal the approach traces may pass (a CTF flag)
     if(DSR_ObjActive())
     {
+        //no role yet (a spawn that came before the objective was known): pick one now
+        if(!isDefined(self.dsr_objRole) && (level.dsr_objective == "ctf" || level.dsr_objective == "commandpost"))
+            self DSR_PickRole();
         switch(level.dsr_objective)
         {
             case "bomb":        pos = self DSR_GoalBomb(); break;
@@ -208,21 +327,45 @@ DSR_GoalCtf()
         enemy = level.axis_flag;
     }
 
+    //the flag models are solid: the approach traces ignore the one at the goal, or they stop the bot 24 units
+    //short of its pole, outside the flag's trigger (DSR_ObjApproach)
     if(isDefined(enemy.carried_by) && enemy.carried_by == self)
+    {
+        //a capture needs the bot's own flag at its base (CODUO-X flag_carrier_atgoal). While it is taken or
+        //lying dropped, guard around the capture point instead of standing on it (maintainer); the switch back
+        //to reach when the flag is returned replans (DSR_ObjReplan)
+        if(own.moved)
+            return self DSR_SetMode("hold", enemy.goal.origin);
+        self.dsr_objIgnore = own; //the capture goal is at the bot's own flag
         return self DSR_SetMode("reach", enemy.goal.origin);
+    }
 
     if(self.dsr_objRole == "attack")
     {
-        pos = enemy maps\mp\uox\_uox_flags::get_flag_position();
+        self.dsr_objIgnore = enemy;
+        pos = DSR_FlagPos(enemy);
         if(isDefined(enemy.carried_by))
             return self DSR_SetMode("hold", pos); //a teammate has it: go with them
         return self DSR_SetMode("reach", pos);
     }
 
-    pos = own maps\mp\uox\_uox_flags::get_flag_position();
+    pos = DSR_FlagPos(own);
+    self.dsr_objIgnore = own;
     if(isDefined(own.carried_by) || own.moved)
         return self DSR_SetMode("reach", pos); //chase the carrier, or return the dropped flag
     return self DSR_SetMode("hold", pos);
+}
+
+//where a CTF flag really is: with its carrier, where it was dropped, or at its base. Not CODUO-X's
+//get_flag_position: that returns the dropped-flag trigger, which sits 10000 units under the map
+//(triggerOff) while the flag is at its base
+DSR_FlagPos(flag)
+{
+    if(isDefined(flag.carried_by) && isAlive(flag.carried_by))
+        return flag.carried_by.origin;
+    if(flag.moved && isDefined(flag.mobile_trigger))
+        return flag.mobile_trigger.origin;
+    return flag.startorigin;
 }
 
 DSR_GoalRadio()
@@ -291,35 +434,108 @@ DSR_PostPos(f)
     return f.dsr_pos;
 }
 
-//retrieval: attackers take the nearest objective nobody holds and carry it to its goal; defenders guard it
+//retrieval: attackers take the nearest objective that is neither captured nor carried (at home or where it
+//was dropped) and carry it to its goal, or guard the goal of one a teammate carries; defenders chase an
+//enemy carrier, otherwise guard the nearest objective still on the ground
 DSR_GoalRetrieval()
 {
     if(!isDefined(level.retrieval_objective) || !isDefined(game["re_attackers"]))
         return undefined;
     attacker = (self.pers["team"] == game["re_attackers"]);
 
-    best = undefined;
-    bestD = 0;
+    free = undefined;
+    freeD = 0;
+    carried = undefined;
+    carrier = undefined;
+    carriedD = 0;
     for(i = 0; i < level.retrieval_objective.size; i++)
     {
         o = level.retrieval_objective[i];
-        if(!isDefined(o))
+        if(DSR_ReDone(i))
             continue;
-        if(attacker && isDefined(self.hasobj) && isDefined(self.hasobj[o.objnum]) && self.hasobj[o.objnum] == o
-            && isDefined(o.goal))
-            return self DSR_SetMode("reach", o.goal.origin);
-        d = distanceSquared(self.origin, o.origin);
-        if(!isDefined(best) || d < bestD)
+        holder = DSR_ReCarrier(o);
+        if(isDefined(holder))
         {
-            best = o;
-            bestD = d;
+            if(holder == self && isDefined(o.goal))
+                return self DSR_SetMode("reach", o.goal.origin);
+            d = distanceSquared(self.origin, holder.origin);
+            if(!isDefined(carried) || d < carriedD)
+            {
+                carried = o;
+                carrier = holder;
+                carriedD = d;
+            }
+            continue;
+        }
+        //not carried: o.origin is its home spot or where it was dropped (CODUO-X moves the model there)
+        d = distanceSquared(self.origin, o.origin);
+        if(!isDefined(free) || d < freeD)
+        {
+            free = o;
+            freeD = d;
         }
     }
-    if(!isDefined(best))
-        return undefined;
+
     if(attacker)
-        return self DSR_SetMode("reach", best.origin);
-    return self DSR_SetMode("hold", best.origin);
+    {
+        if(isDefined(free))
+        {
+            self.dsr_objIgnore = free;
+            return self DSR_SetMode("reach", free.origin);
+        }
+        if(isDefined(carried) && isDefined(carried.goal))
+            return self DSR_SetMode("hold", carried.goal.origin);
+        return undefined;
+    }
+    if(isDefined(carrier))
+        return self DSR_SetMode("reach", carrier.origin);
+    if(isDefined(free))
+        return self DSR_SetMode("hold", free.origin);
+    return undefined;
+}
+
+//the player carrying retrieval objective o, or undefined
+DSR_ReCarrier(o)
+{
+    players = getentarray("player", "classname");
+    for(i = 0; i < players.size; i++)
+    {
+        p = players[i];
+        if(p.sessionstate == "playing" && isDefined(p.hasobj) && isDefined(p.hasobj[o.objnum]) && p.hasobj[o.objnum] == o)
+            return p;
+    }
+    return undefined;
+}
+
+//true once retrieval objective i is captured (or deleted)
+DSR_ReDone(i)
+{
+    if(!isDefined(level.retrieval_objective[i]))
+        return true;
+    return isDefined(level.dsr_reDone) && isDefined(level.dsr_reDone[i]);
+}
+
+//CODUO-X notifies "completed" on a captured objective and keeps the hidden model at its pickup spot,
+//so capture is only visible through that notify. Started once the objectives exist (threaded setup).
+DSR_ReWatchStart()
+{
+    if(isDefined(level.dsr_reWatched) || !isDefined(level.retrieval_objective))
+        return;
+    level.dsr_reWatched = true;
+    level.dsr_reDone = [];
+    for(i = 0; i < level.retrieval_objective.size; i++)
+    {
+        if(isDefined(level.retrieval_objective[i]))
+            level.retrieval_objective[i] thread DSR_ReDoneWait(i);
+    }
+}
+
+DSR_ReDoneWait(i)
+{
+    self waittill("completed");
+    level.dsr_reDone[i] = true;
+    if([[level.getVars]]("bot_ai_debug") >= 2)
+        logprint("DSR: obj retrieval objective " + i + " captured\n");
 }
 
 /* *************************************************************************************************
@@ -340,27 +556,107 @@ DSR_ObjPickGoal(from)
     if(!isDefined(pos))
         return -1;
 
-    cand = dsrbot\_dsr_nav::DSR_NearbyCandidates(pos, 16);
+    cand = dsrbot\_dsr_nav::DSR_NearbyCandidates(pos, 40);
     nearest = -1;
-    near = [];
-    for(i = 0; i < cand.size; i++)
+    for(i = 0; i < cand.size && nearest < 0; i++)
     {
-        n = cand[i];
-        if(!isDefined(level.dsr_wpGoal[n]))
-            continue;
-        if(nearest < 0)
-            nearest = n; //candidates come nearest first
-        if(distanceSquared(level.wp[n].origin, pos) < 512 * 512)
-            near[near.size] = n;
+        if(isDefined(level.dsr_wpGoal[cand[i]]))
+            nearest = cand[i]; //candidates come nearest first
     }
     if(nearest < 0)
         return -1;
     self.dsr_objPickPos = pos;
     self.dsr_objPickMode = self.dsr_objMode;
     self.dsr_objCheckAt = getTime() + 1000;
-    if(self.dsr_objMode == "hold" && near.size)
-        return near[randomInt(near.size)];
+    if(isDefined(self.dsr_objHoldWp))
+        self.dsr_objLastHold = self.dsr_objHoldWp;
+    self.dsr_objHoldWp = undefined;
+    if([[level.getVars]]("bot_ai_debug") >= 2)
+    {
+        role = "none";
+        if(isDefined(self.dsr_objRole))
+            role = self.dsr_objRole;
+        logprint("DSR: obj " + self.name + " goal role=" + role + " mode=" + self.dsr_objMode + " pos=" + pos + " nearest=" + nearest + "\n");
+    }
+    if(self.dsr_objMode == "hold")
+    {
+        n = self DSR_PickHoldNode(pos, cand);
+        if(n >= 0)
+        {
+            self.dsr_objHoldWp = n;
+            return n;
+        }
+    }
     return nearest;
+}
+
+/* *************************************************************************************************
+**** DSR_PickHoldNode(pos, cand)
+****
+**** self = bot guarding the objective at pos (maintainer). The best scoring candidate node within 600
+**** units, -1 if none: a random 0-99, then
+****   -1000  the middle of a single-file lane (2 or fewer neighbours): it would block everyone passing
+****    -500  within 128 units of the objective itself
+****    -400  for each teammate holding a node within 256 units: spread the defence out
+****    -800  the node it held last, or one within 128 units of it: a new spot each time (maintainer: humans
+****          learn where a bot sits after it gives itself away with a kill)
+**** and for ctf defenders and flag carriers only nodes closer to their own flag than to the enemy's
+************************************************************************************************* */
+DSR_PickHoldNode(pos, cand)
+{
+    holds = [];
+    players = getentarray("player", "classname");
+    for(i = 0; i < players.size; i++)
+    {
+        p = players[i];
+        if(p != self && isDefined(p.dsr_active) && isDefined(p.dsr_objHoldWp) && p.pers["team"] == self.pers["team"])
+            holds[holds.size] = level.wp[p.dsr_objHoldWp].origin;
+    }
+
+    enemyFlag = undefined;
+    carrying = (level.dsr_objective == "ctf" && isDefined(level.allies_flag) && isDefined(level.axis_flag)
+        && ((isDefined(level.allies_flag.carried_by) && level.allies_flag.carried_by == self)
+        || (isDefined(level.axis_flag.carried_by) && level.axis_flag.carried_by == self)));
+    if(level.dsr_objective == "ctf" && (self.dsr_objRole == "defend" || carrying))
+    {
+        enemyFlag = level.allies_flag;
+        if(self.pers["team"] == "allies")
+            enemyFlag = level.axis_flag;
+    }
+
+    best = -1;
+    bestScore = 0;
+    for(i = 0; i < cand.size; i++)
+    {
+        n = cand[i];
+        if(!isDefined(level.dsr_wpGoal[n]))
+            continue;
+        o = level.wp[n].origin;
+        d = distanceSquared(o, pos);
+        if(d > 600 * 600)
+            continue;
+        if(isDefined(enemyFlag) && d >= distanceSquared(o, enemyFlag.startorigin))
+            continue;
+
+        score = randomInt(100);
+        if(level.dsr_wpDegree[n] <= 2)
+            score -= 1000;
+        if(d < 128 * 128)
+            score -= 500;
+        if(isDefined(self.dsr_objLastHold) && distanceSquared(o, level.wp[self.dsr_objLastHold].origin) < 128 * 128)
+            score -= 800;
+        for(j = 0; j < holds.size; j++)
+        {
+            if(distanceSquared(o, holds[j]) < 256 * 256)
+                score -= 400;
+        }
+        if(best < 0 || score > bestScore)
+        {
+            best = n;
+            bestScore = score;
+        }
+    }
+    return best;
 }
 
 DSR_FleeGoal(from)
@@ -422,10 +718,14 @@ DSR_ObjApproach()
         return 0;
     dir = vectorNormalize(flat - self.origin);
 
+    ignore = self;
+    if(isDefined(self.dsr_objIgnore))
+        ignore = self.dsr_objIgnore;
+
     frac = 1;
     for(h = 16; h <= 40; h += 24)
     {
-        trace = dsrbot\_dsr_core::DSR_Trace(self.origin + (0, 0, h), flat + (0, 0, h), false, self);
+        trace = dsrbot\_dsr_core::DSR_Trace(self.origin + (0, 0, h), flat + (0, 0, h), false, ignore);
         if(!isDefined(trace))
             return -1;
         if(trace["fraction"] < frac)
@@ -438,7 +738,7 @@ DSR_ObjApproach()
         return self DSR_ApproachFail("blocked", dist);
 
     spot = self.origin + (dir[0] * reach, dir[1] * reach, 0);
-    trace = dsrbot\_dsr_core::DSR_Trace(spot + (0, 0, 18), spot + (0, 0, -40), false, self);
+    trace = dsrbot\_dsr_core::DSR_Trace(spot + (0, 0, 18), spot + (0, 0, -40), false, ignore);
     if(!isDefined(trace))
         return -1;
     if(trace["fraction"] == 1)

@@ -138,6 +138,35 @@ DSR_FindGoalSet()
             wait level.frametime;
     }
 
+    //each node's number of distinct neighbours either way: 2 or fewer is the middle of a single-file lane,
+    //a poor place to stand (_dsr_obj DSR_PickHoldNode)
+    level.dsr_wpDegree = [];
+    for(i = 0; i < level.dsr_wpCount; i++)
+    {
+        seen = [];
+        d = 0;
+        next = level.wp[i].next;
+        for(j = 0; j < next.size; j++)
+        {
+            if(!isDefined(seen[next[j]]))
+            {
+                seen[next[j]] = true;
+                d++;
+            }
+        }
+        for(j = 0; j < prev[i].size; j++)
+        {
+            if(!isDefined(seen[prev[i][j]]))
+            {
+                seen[prev[i][j]] = true;
+                d++;
+            }
+        }
+        level.dsr_wpDegree[i] = d;
+        if(i % 400 == 399)
+            wait level.frametime;
+    }
+
     best = [];
     for(t = 0; t < 4 && best.size * 2 < level.dsr_wpCount; t++)
     {
