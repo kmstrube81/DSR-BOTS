@@ -329,6 +329,9 @@ DSR_BotStart()
     self.dsr_replan = undefined;
     self.dsr_avoid = undefined;
     self.dsr_moving = false;
+    self.dsr_moveFrom = undefined;
+    self.dsr_wallPos = undefined;
+    self.dsr_ejects = 0;
     self.dsr_objGoalWp = undefined;
     self dsrbot\_dsr_obj::DSR_ObjSpawn();
     self dsrbot\_dsr_sense::DSR_SenseReset();
@@ -680,6 +683,7 @@ DSR_FollowPath()
 DSR_WalkTo(pos)
 {
     self DSR_SetFireMode("run");
+    self.dsr_moveFrom = self.dsr_org.origin; //where this straight leg began (DSR_EjectFromWall)
 
     for(;;)
     {
@@ -797,12 +801,99 @@ DSR_UnstickRun()
             if([[level.getVars]]("bot_ai_debug") >= 2)
                 logprint("DSR: unstick " + self.name + " from=" + p.name + "\n");
             //straight there: the player it leaves is in the way of an ordinary walk's checks
+            self.dsr_moveFrom = self.dsr_org.origin;
             self.dsr_moving = true;
             self.dsr_org moveTo(spot, 40.0 / level.dsr_moveSpeed, 0, 0); //40.0: int / int truncates to 0
             self.dsr_org waittill("movedone");
             return;
         }
     }
+}
+
+/* *************************************************************************************************
+**** DSR_EjectFromWall()
+****
+**** self = bot that is not moving, from DSR_BotThink. The safety net for a bot pushed into a wall or a
+**** crate: dsr_org's moveTo ignores collision, so a walk whose centre line traced clear (DSR_CheckLocalMove)
+**** can still put a corner of the 32-unit player box into a wall it passes at an angle. Once the bot has
+**** stopped somewhere new (4+ units from the last check), it probes out to the box's edge at waist height
+**** (40: above the risers of a stair up to 45 degrees) in 8 directions, 16 units straight and 22.6 to the
+**** corners. Probes that hit short of the edge push it out, along the sum of their directions, by the
+**** largest shortfall + 1. An origin inside solid (a 1-unit probe hits at once) is walked back up to 32 units
+**** towards where its last straight move began. At most 3 pushes in a row, then it leaves the bot be until
+**** it moves again. 9 traces per check, all in one think or none. Returns true when it moved the bot.
+************************************************************************************************* */
+DSR_EjectFromWall()
+{
+    if(self.dsr_moving || isDefined(self.dsr_special) || !isDefined(self.dsr_org))
+        return false;
+    if(isDefined(self.dsr_wallPos) && distanceSquared(self.origin, self.dsr_wallPos) < 16)
+        return false;
+    if(level.dsr_traceCap - level.dsr_traces < 9)
+        return false;
+
+    mid = self.origin + (0, 0, 40);
+    push = (0, 0, 0);
+    short = 0;
+    how = "edge";
+    //VERIFY that bulletTrace started inside solid returns fraction 0 (Quake 3's allsolid)
+    trace = dsrbot\_dsr_core::DSR_Trace(mid, mid + (0, 0, 1), false, self);
+    if(trace["fraction"] < 1)
+    {
+        how = "solid";
+        if(isDefined(self.dsr_moveFrom))
+        {
+            push = (self.dsr_moveFrom[0] - self.origin[0], self.dsr_moveFrom[1] - self.origin[1], 0);
+            short = distance(push, (0, 0, 0));
+            if(short > 32)
+                short = 32;
+        }
+    }
+    else
+    {
+        for(i = 0; i < 8; i++)
+        {
+            dir = anglesToForward((0, i * 45, 0));
+            reach = 16;
+            if(i % 2)
+                reach = 22.6;
+            trace = dsrbot\_dsr_core::DSR_Trace(mid, mid + (dir[0] * reach, dir[1] * reach, 0), false, self);
+            if(trace["fraction"] < 1)
+            {
+                push = push - dir;
+                if(reach * (1 - trace["fraction"]) > short)
+                    short = reach * (1 - trace["fraction"]);
+            }
+        }
+        short += 1;
+    }
+
+    if(short <= 1 || (push[0] == 0 && push[1] == 0))
+    {
+        //clear (or boxed in on opposite sides, or nowhere to go back to): nothing to do here
+        self.dsr_wallPos = self.origin;
+        self.dsr_ejects = 0;
+        return false;
+    }
+    if(isDefined(self.dsr_ejects) && self.dsr_ejects >= 3)
+    {
+        if([[level.getVars]]("bot_ai_debug") >= 1)
+            logprint("DSR: eject " + self.name + " giveup at=" + self.origin + "\n");
+        self.dsr_wallPos = self.origin;
+        self.dsr_ejects = 0;
+        return false;
+    }
+    if(!isDefined(self.dsr_ejects))
+        self.dsr_ejects = 0;
+    self.dsr_ejects++;
+    self.dsr_wallPos = undefined; //check again where it lands
+
+    push = vectorNormalize(push);
+    dest = self.dsr_org.origin + (push[0] * short, push[1] * short, 0);
+    if([[level.getVars]]("bot_ai_debug") >= 2)
+        logprint("DSR: eject " + self.name + " " + how + " by=" + (int)(short) + " at=" + self.origin + "\n");
+    self.dsr_org moveTo(dest, level.frametime * 2, 0, 0);
+    return true;
 }
 
 /* *************************************************************************************************
@@ -1338,6 +1429,14 @@ DSR_CeaseFire()
 //stand or crouch for this attack: HL re-rolls 10% of the time per attack schedule
 DSR_PickStance()
 {
+    //low cover (_dsr_cover): crouched behind it, standing up over it only to peek
+    if(level.dsr_aiLevel >= 4 && isDefined(self.dsr_coverCrouch) && self.dsr_coverCrouch
+        && self dsrbot\_dsr_cover::DSR_InCover())
+    {
+        if(isDefined(self.dsr_peekStand))
+            return "fire_stand";
+        return "fire_crouch";
+    }
     if(!isDefined(self.dsr_stance) || randomInt(10) == 0)
     {
         if(randomInt(2))

@@ -7,6 +7,8 @@
 ****   bot_ai_level 3: HL schedules: they pursue a hidden enemy to where it was last seen (EstablishLineOfFire),
 ****                   look around there (Sweep) and give up, wait it out when the way fails (Standoff), and
 ****                   use the first quick-chat lines (_dsr_squad)
+****   bot_ai_level 4: cover (_dsr_cover): they take cover when hurt (TakeCover), reload in cover (HideReload),
+****                   wait and peek from it (WaitInCover, PeekFire) and leave it to pursue after 3 peeks
 ************************************************************************************************* */
 
 /* *************************************************************************************************
@@ -23,6 +25,8 @@ DSR_CoreVars()
     maps\mp\uox\_uox_vars::varDef("bot", "ai_engagemax", "int", true, 2, 0, 16, "Bot AI Max Bots Engaging One Target");
     maps\mp\uox\_uox_vars::varDef("bot", "ai_replandist", "int", true, 256, 32, 4096, "Bot AI Goal Move That Triggers A Replan");
     maps\mp\uox\_uox_vars::varDef("bot", "ai_chatcooldown", "int", true, 4, 0, 60, "Bot AI Team Chatter Cooldown");
+    maps\mp\uox\_uox_vars::varDef("bot", "ai_covercand", "int", true, 12, 0, 32, "Bot AI Cover Candidates Per Search (0 = lateral only)");
+    maps\mp\uox\_uox_vars::varDef("bot", "ai_peekfire", "bool", true, true, "", "", "Bot AI Peek And Fire From Cover");
 }
 
 /* *************************************************************************************************
@@ -69,6 +73,8 @@ DSR_UpdateBudgets()
     level.dsr_traceCap = DSR_Max(1, (int)([[level.getVars]]("bot_ai_tracespersec") * level.frametime));
     level.dsr_astarCap = DSR_Max(1, (int)([[level.getVars]]("bot_ai_astarpersec") * level.frametime));
     level.dsr_engageMax = [[level.getVars]]("bot_ai_engagemax");
+    level.dsr_coverCand = [[level.getVars]]("bot_ai_covercand");
+    level.dsr_peekFire = [[level.getVars]]("bot_ai_peekfire");
 }
 
 /* *************************************************************************************************
@@ -213,6 +219,9 @@ DSR_BotThink()
         self.dsr_replan = true; //the patrol restarts from the nearest node afterwards
         return;
     }
+    //stopped with part of the body in a wall (moveTo ignores collision): out of it before anything else
+    if(self dsrbot\_dsr_motor::DSR_EjectFromWall())
+        return;
 
     tasks = level.dsr_sched[self.dsr_sched]["task"];
     for(guard = 0; guard < tasks.size; guard++)
@@ -225,7 +234,7 @@ DSR_BotThink()
             if(!isDefined(self.dsr_schedReason))
                 self.dsr_schedReason = "fail " + tasks[self.dsr_taskIdx];
             if(isDefined(self.dsr_failSched))
-                self DSR_SetSchedule(self.dsr_failSched);
+                self DSR_SetSchedule(self DSR_FailSchedule(self.dsr_failSched));
             else
                 self DSR_SetSchedule(self DSR_GetSchedule());
             return;
@@ -287,6 +296,7 @@ DSR_DefineSchedules()
     s = DSR_AddInterrupt(s, "ENEMY_LOST");
     s = DSR_AddInterrupt(s, "NO_AMMO");
     s = DSR_AddInterrupt(s, "CAN_MELEE");
+    s = DSR_AddInterruptAt(s, "HEAVY_DAMAGE", 4); //there is cover to run to from level 4
     level.dsr_sched["RangeAttack"] = s;
 
     s = DSR_NewSched();
@@ -317,7 +327,7 @@ DSR_DefineSchedules()
     //Phase 3 (bot_ai_level 3). EstablishLineOfFire: walk to where the enemy was last seen (or is, when it is
     //only partly visible or out of range) until there is a shot. Failing that: Standoff
     s = DSR_NewSched();
-    s = DSR_AddTask(s, "SET_FAIL_SCHEDULE", "Standoff");
+    s = DSR_AddTask(s, "SET_FAIL_SCHEDULE", "ElofFail");
     s = DSR_AddTask(s, "STOP_MOVING", "now");
     s = DSR_AddTask(s, "GET_PATH_TO_ENEMY", 0);
     s = DSR_AddTask(s, "RUN_PATH", 0);
@@ -329,7 +339,7 @@ DSR_DefineSchedules()
     s = DSR_AddInterrupt(s, "NO_AMMO");
     level.dsr_sched["EstablishLineOfFire"] = s;
 
-    //HL's Standoff: hold still facing where the enemy was for 1-3 s and wait for it to show
+    //HL's Standoff (ElofFail below level 4): hold still facing where the enemy was for 1-3 s
     s = DSR_NewSched();
     s = DSR_AddTask(s, "STOP_MOVING", "now");
     s = DSR_AddTask(s, "FACE_ENEMY", "look");
@@ -360,6 +370,74 @@ DSR_DefineSchedules()
     s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
     s = DSR_AddInterrupt(s, "OBJ_ACT");
     level.dsr_sched["Sweep"] = s;
+
+    //Phase 4 (bot_ai_level 4, _dsr_cover). TakeCover: find cover from the enemy and run there; failing that
+    //TakeCoverFailed (RangeAttack with a shot, else Fail)
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "SET_FAIL_SCHEDULE", "TakeCoverFailed");
+    s = DSR_AddTask(s, "WAIT", 0.2);
+    s = DSR_AddTask(s, "FIND_COVER_FROM_ENEMY", 0);
+    s = DSR_AddTask(s, "RUN_TO_COVER", 0);
+    s = DSR_AddTask(s, "REMEMBER_INCOVER", 0);
+    level.dsr_sched["TakeCover"] = s;
+
+    //out of rounds: reload where the enemy can't see; no cover found: reload where it stands
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "SET_FAIL_SCHEDULE", "Reload");
+    s = DSR_AddTask(s, "FIND_COVER_FROM_ENEMY", 0);
+    s = DSR_AddTask(s, "RUN_TO_COVER", 0);
+    s = DSR_AddTask(s, "REMEMBER_INCOVER", 0);
+    s = DSR_AddTask(s, "FACE_ENEMY", "cover");
+    s = DSR_AddTask(s, "RELOAD", 0);
+    s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
+    level.dsr_sched["HideReload"] = s;
+
+    //in cover, facing where the enemy was (crouched behind low cover) for 1-3 s
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "FACE_ENEMY", "cover");
+    s = DSR_AddTask(s, "WAIT_FACE_ENEMY", -1);
+    s = DSR_AddInterrupt(s, "NEW_ENEMY");
+    s = DSR_AddInterrupt(s, "ENEMY_DEAD");
+    s = DSR_AddInterrupt(s, "ENEMY_LOST");
+    s = DSR_AddInterrupt(s, "CAN_FIRE");
+    s = DSR_AddInterrupt(s, "CAN_MELEE");
+    s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
+    level.dsr_sched["WaitInCover"] = s;
+
+    //one look out of cover (PEEK); a shot turns it into RangeAttack, after which the bot returns to cover
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "PEEK", 0);
+    s = DSR_AddInterrupt(s, "NEW_ENEMY");
+    s = DSR_AddInterrupt(s, "ENEMY_DEAD");
+    s = DSR_AddInterrupt(s, "ENEMY_LOST");
+    s = DSR_AddInterrupt(s, "CAN_FIRE");
+    s = DSR_AddInterrupt(s, "CAN_MELEE");
+    s = DSR_AddInterrupt(s, "NO_AMMO");
+    s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
+    level.dsr_sched["PeekFire"] = s;
+
+    //back behind the cover it peeked out of
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "RUN_TO_COVER", 0);
+    s = DSR_AddTask(s, "REMEMBER_INCOVER", 0);
+    s = DSR_AddInterrupt(s, "ENEMY_DEAD");
+    s = DSR_AddInterrupt(s, "CAN_MELEE");
+    level.dsr_sched["ReturnToCover"] = s;
+
+    //HL's Fail: stand a second, then choose again
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "WAIT", 1);
+    s = DSR_AddInterrupt(s, "NEW_ENEMY");
+    s = DSR_AddInterrupt(s, "ENEMY_DEAD");
+    s = DSR_AddInterrupt(s, "ENEMY_LOST");
+    s = DSR_AddInterrupt(s, "CAN_FIRE");
+    s = DSR_AddInterrupt(s, "CAN_MELEE");
+    level.dsr_sched["Fail"] = s;
 }
 
 DSR_NewSched()
@@ -368,6 +446,7 @@ DSR_NewSched()
     s["task"] = [];
     s["param"] = [];
     s["int"] = [];
+    s["intLevel"] = [];
     return s;
 }
 
@@ -381,8 +460,35 @@ DSR_AddTask(s, task, param)
 
 DSR_AddInterrupt(s, cond)
 {
-    s["int"][s["int"].size] = cond;
+    return DSR_AddInterruptAt(s, cond, 0);
+}
+
+//an interrupt that only applies from bot_ai_level minLevel up
+DSR_AddInterruptAt(s, cond, minLevel)
+{
+    n = s["int"].size;
+    s["int"][n] = cond;
+    s["intLevel"][n] = minLevel;
     return s;
+}
+
+//plan 5.5 fail mappings: TakeCoverFailed = RangeAttack with a shot, else Fail; ElofFail = TakeCover from
+//level 4 (Standoff below it)
+DSR_FailSchedule(name)
+{
+    if(name == "TakeCoverFailed")
+    {
+        if(self.dsr_cond["CAN_FIRE"])
+            return "RangeAttack";
+        return "Fail";
+    }
+    if(name == "ElofFail")
+    {
+        if(level.dsr_aiLevel >= 4)
+            return "TakeCover";
+        return "Standoff";
+    }
+    return name;
 }
 
 //the first interrupt condition of the current schedule that is set, or undefined. An urgent defuse
@@ -396,9 +502,10 @@ DSR_Interrupted()
         return undefined;
     }
     list = level.dsr_sched[self.dsr_sched]["int"];
+    minLevel = level.dsr_sched[self.dsr_sched]["intLevel"];
     for(i = 0; i < list.size; i++)
     {
-        if(self.dsr_cond[list[i]])
+        if(self.dsr_cond[list[i]] && level.dsr_aiLevel >= minLevel[i])
             return list[i];
     }
     return undefined;
@@ -423,6 +530,9 @@ DSR_SetSchedule(name)
     self dsrbot\_dsr_motor::DSR_CeaseFire();
     self dsrbot\_dsr_obj::DSR_ObjActionEnd(); //leaving a plant / defuse unfinished
     self.dsr_failSched = undefined;
+    //schedules that walk away from cover, or end the fight, forget it (_dsr_cover)
+    if(name == "Patrol" || name == "EstablishLineOfFire" || name == "Sweep" || name == "ObjAction")
+        self dsrbot\_dsr_cover::DSR_LeaveCover();
     self.dsr_sched = name;
     self.dsr_schedLast = name;
     self.dsr_schedReason = undefined;
@@ -433,7 +543,7 @@ DSR_SetSchedule(name)
 /* *************************************************************************************************
 **** DSR_GetSchedule()
 ****
-**** port of CHGrunt::GetSchedule (plan 5.5), Phase 2 and 3 lines; each line is gated by bot_ai_level.
+**** port of CHGrunt::GetSchedule (plan 5.5), Phase 2-4 lines; each line is gated by bot_ai_level.
 **** No squads before Phase 5, so every bot acts as HL's squadless grunt (leader checks skipped).
 ************************************************************************************************* */
 DSR_GetSchedule()
@@ -482,10 +592,49 @@ DSR_GetSchedule()
     }
     if(self.dsr_cond["CAN_MELEE"])
         return "Melee";
+    inCover = false;
+    if(level.dsr_aiLevel >= 4)
+    {
+        inCover = self dsrbot\_dsr_cover::DSR_InCover();
+        //HL: out of rounds, reload behind cover (HideReload); hurt: heavy always and light 90% take cover
+        //(heavy damage in cover means the cover failed: find another)
+        if(self.dsr_cond["NO_AMMO"] && self dsrbot\_dsr_motor::DSR_ReloadAmount() > 0 && !inCover)
+            return "HideReload";
+        if(self.dsr_cond["HEAVY_DAMAGE"] || (!inCover && self.dsr_cond["LIGHT_DAMAGE"] && randomInt(10) < 9))
+            return "TakeCover";
+    }
     if(self.dsr_cond["NO_AMMO"] && self dsrbot\_dsr_motor::DSR_ReloadAmount() > 0)
         return "Reload";
     if(self.dsr_cond["CAN_FIRE"])
         return "RangeAttack";
+    if(level.dsr_aiLevel >= 4 && !self dsrbot\_dsr_obj::DSR_ObjPassive(self.dsr_enemy))
+    {
+        //peeked out of full cover and lost the shot: back behind it
+        if(isDefined(self.dsr_peeking) && isDefined(self.dsr_coverPos) && !inCover
+            && distanceSquared(self.origin, self.dsr_coverPos) < 400 * 400)
+            return "ReturnToCover";
+        //in cover with no shot: wait, peek, wait, peek ...; after 3 peeks (3 waits with PeekFire off)
+        //without seeing the enemy, leave and pursue (maintainer)
+        if(inCover)
+        {
+            if(self.dsr_coverRounds < 3)
+            {
+                if(self.dsr_schedLast == "WaitInCover")
+                {
+                    if(level.dsr_peekFire)
+                        return "PeekFire";
+                    self.dsr_coverRounds++;
+                }
+                return "WaitInCover";
+            }
+            if([[level.getVars]]("bot_ai_debug") >= 2)
+                logprint("DSR: cover " + self.name + " leave rounds=" + self.dsr_coverRounds + "\n");
+            self dsrbot\_dsr_cover::DSR_LeaveCover();
+            self.dsr_elofReached = undefined;
+            self.dsr_elofTries = 0;
+            return "EstablishLineOfFire";
+        }
+    }
     if(self.dsr_cond["SEE_ENEMY"] && !self.dsr_friendBlock)
     {
         //only partly visible (round or over cover) or out of range: no shot from here, so don't stand and
@@ -542,6 +691,10 @@ DSR_RunTask()
         case "RUN_PATH":        return self DSR_Task_RUN_PATH(starting);
         case "SWEEP":           return self DSR_Task_SWEEP(starting);
         case "SWEEP_END":       return self DSR_Task_SWEEP_END();
+        case "FIND_COVER_FROM_ENEMY": return self dsrbot\_dsr_cover::DSR_Task_FIND_COVER_FROM_ENEMY(starting);
+        case "RUN_TO_COVER":    return self dsrbot\_dsr_cover::DSR_Task_RUN_TO_COVER(starting);
+        case "REMEMBER_INCOVER": return self dsrbot\_dsr_cover::DSR_Task_REMEMBER_INCOVER();
+        case "PEEK":            return self dsrbot\_dsr_cover::DSR_Task_PEEK(starting);
     }
     return "fail";
 }
@@ -754,10 +907,11 @@ DSR_Task_STOP_MOVING(param, starting)
 }
 
 /* *************************************************************************************************
-**** FACE_ENEMY("fire" | "look")
+**** FACE_ENEMY("fire" | "look" | "cover")
 ****
 **** turns to the enemy. "fire" swaps to this attack's stand or crouch fire variant now, so the raise
-**** overlaps the turn; "look" keeps a fire variant if one is held, else raises the binoculars (hold).
+**** overlaps the turn; "look" keeps a fire variant if one is held, else raises the binoculars (hold);
+**** "cover" crouches (empty crouch fire variant) behind low cover, else holds the binoculars.
 **** Done when aimed, or after 1.5 s.
 ************************************************************************************************* */
 DSR_Task_FACE_ENEMY(param, starting)
@@ -767,6 +921,14 @@ DSR_Task_FACE_ENEMY(param, starting)
         self.dsr_aiming = true;
         if(param == "fire")
             self dsrbot\_dsr_motor::DSR_SetFireMode(self dsrbot\_dsr_motor::DSR_PickStance());
+        else if(param == "cover")
+        {
+            self.dsr_peekStand = undefined;
+            if(isDefined(self.dsr_coverCrouch) && self.dsr_coverCrouch)
+                self dsrbot\_dsr_motor::DSR_SetFireMode("fire_crouch");
+            else
+                self dsrbot\_dsr_motor::DSR_SetFireMode("hold");
+        }
         else if(!isDefined(self.dsr_fireMode) || (self.dsr_fireMode != "fire_stand" && self.dsr_fireMode != "fire_crouch"))
             self dsrbot\_dsr_motor::DSR_SetFireMode("hold");
     }

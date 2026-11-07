@@ -77,6 +77,7 @@ DSR_SenseReset()
     self.dsr_pointBlankShot = undefined;
     self.dsr_elofReached = undefined;
     self.dsr_elofTries = 0;
+    self dsrbot\_dsr_cover::DSR_LeaveCover();
     self.dsr_enemy = undefined;
     self.dsr_lastEnemy = undefined;
     self.dsr_enemyLastPos = undefined;
@@ -182,9 +183,11 @@ DSR_GatherConditions()
                 see = true;
                 self.dsr_enemyLastPos = self.dsr_enemy.origin;
                 self.dsr_enemyLastSeen = getTime();
-                //seen again: a new pursuit starts from here if it hides again
+                //seen again: a new pursuit starts from here if it hides again, and peeks from cover
+                //count again from 0
                 self.dsr_elofReached = undefined;
                 self.dsr_elofTries = 0;
+                self.dsr_coverRounds = 0;
             }
             else if(getTime() - self.dsr_enemyLastSeen > self DSR_MemoryMs())
             {
