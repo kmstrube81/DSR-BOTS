@@ -110,6 +110,17 @@ DSR_CoverTaken(pos)
         if(distanceSquared(p.dsr_coverPos, pos) < 128 * 128)
             return true;
     }
+    //level 5, HL FValidateCover: nor within 128 of where a squadmate stands
+    s = self dsrbot\_dsr_squad::DSR_Squad();
+    if(s >= 0)
+    {
+        for(i = 0; i < players.size; i++)
+        {
+            p = players[i];
+            if(p != self && isDefined(p.dsr_squad) && p.dsr_squad == s && distanceSquared(p.origin, pos) < 128 * 128)
+                return true;
+        }
+    }
     return false;
 }
 

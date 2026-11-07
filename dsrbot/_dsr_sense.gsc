@@ -95,8 +95,13 @@ DSR_SenseReset()
     self.dsr_dmgTaken = 0;
     self.dsr_flankTarget = undefined;
     self.dsr_flankTime = 0;
+    self.dsr_flankAt = [];
     self.dsr_flankPending = undefined;
     self.dsr_flankWanted = undefined;
+    self.dsr_standoffs = 0;
+    self.dsr_foundEnemy = undefined;
+    self.dsr_squadGiven = undefined;
+    self.dsr_greatShot = undefined;
     self DSR_ClearConditions();
 }
 
@@ -114,6 +119,9 @@ DSR_ClearConditions()
     self.dsr_cond["NO_AMMO"] = false;
     self.dsr_cond["LIGHT_DAMAGE"] = false;
     self.dsr_cond["HEAVY_DAMAGE"] = false;
+    self.dsr_cond["SQUAD_ENEMY"] = false;
+    self.dsr_cond["HEAR_COMBAT"] = false;
+    self.dsr_cond["SLOT_FREE"] = false;
 }
 
 /* *************************************************************************************************
@@ -133,6 +141,7 @@ DSR_GatherConditions()
     light = false;
     heavy = false;
     noAmmo = (self.dsr_mag <= 0);
+    self.dsr_foundEnemy = undefined;
 
     if(isDefined(self.dsr_dmgPending))
     {
@@ -188,6 +197,7 @@ DSR_GatherConditions()
                 self.dsr_elofReached = undefined;
                 self.dsr_elofTries = 0;
                 self.dsr_coverRounds = 0;
+                self.dsr_standoffs = 0;
             }
             else if(getTime() - self.dsr_enemyLastSeen > self DSR_MemoryMs())
             {
@@ -214,6 +224,15 @@ DSR_GatherConditions()
     }
     self.dsr_lastEnemy = self.dsr_enemy;
 
+    //level 5: share the sighting with the squad (_dsr_squad)
+    if(see && level.dsr_aiLevel >= 5)
+        self dsrbot\_dsr_squad::DSR_SquadSaw(newEnemy);
+
+    //level 5 (teamplay), HL NoFriendlyFire: a teammate in the box along the line of fire
+    if(see && level.dsr_aiLevel >= 5 && level.uox_teamplay && !self.dsr_friendBlock
+        && self dsrbot\_dsr_squad::DSR_FriendInLine(self.dsr_enemy))
+        self.dsr_friendBlock = true;
+
     if(see && self.dsr_clearShot && !self.dsr_friendBlock && !noAmmo)
     {
         range = level.dsr_range[self.dsr_weapon];
@@ -235,6 +254,23 @@ DSR_GatherConditions()
     self.dsr_cond["NO_AMMO"] = noAmmo;
     self.dsr_cond["LIGHT_DAMAGE"] = light;
     self.dsr_cond["HEAVY_DAMAGE"] = heavy;
+
+    //level 5 (_dsr_squad): an enemy a squadmate passed on, gunfire heard with no enemy (only when the bot
+    //could go and look: a slot free, the shooter not already engaged by enough bots), a squad slot free
+    self.dsr_cond["SQUAD_ENEMY"] = isDefined(self.dsr_squadGiven);
+    self.dsr_squadGiven = undefined;
+    hear = false;
+    slotFree = false;
+    if(level.dsr_aiLevel >= 5)
+    {
+        if(!isDefined(self.dsr_enemy) && !(isDefined(self.dsr_objUrgent) && self.dsr_objUrgent) && !noAmmo
+            && self dsrbot\_dsr_squad::DSR_SlotAvailable() && self dsrbot\_dsr_squad::DSR_HearCombat())
+            hear = (self DSR_MayEngage(self.dsr_heardBy) && !self dsrbot\_dsr_obj::DSR_ObjPassive(self.dsr_heardBy));
+        slotFree = (self dsrbot\_dsr_squad::DSR_Squad() >= 0 && !self dsrbot\_dsr_squad::DSR_HasSlot()
+            && self dsrbot\_dsr_squad::DSR_SlotAvailable());
+    }
+    self.dsr_cond["HEAR_COMBAT"] = hear;
+    self.dsr_cond["SLOT_FREE"] = slotFree;
 }
 
 /* *************************************************************************************************
@@ -543,13 +579,20 @@ DSR_IsClosestWithin400(target)
     return true;
 }
 
-//asks the patrol to flank target (DSR_Task_PATROL, DSR_PickFlankGoal); at most once per target per 10 s
+//asks the patrol to flank target (DSR_Task_PATROL, DSR_PickFlankGoal); at most once per target per 10 s,
+//and at most one request per 2 s for any target (two fully engaged targets in view used to alternate
+//every think, each one resetting the other's 10 s)
 DSR_NoteFlank(target)
 {
     if(self DSR_IsIgnoring(target))
         return;
-    if(isDefined(self.dsr_flankTarget) && self.dsr_flankTarget == target && getTime() - self.dsr_flankTime < 10000)
+    now = getTime();
+    if(now - self.dsr_flankTime < 2000)
         return;
+    k = target getEntityNumber();
+    if(isDefined(self.dsr_flankAt[k]) && now - self.dsr_flankAt[k] < 10000)
+        return;
+    self.dsr_flankAt[k] = now;
     self.dsr_flankTarget = target;
     self.dsr_flankTime = getTime();
     self.dsr_flankPending = true;

@@ -331,6 +331,7 @@ DSR_BotStart()
     self.dsr_moving = false;
     self.dsr_moveFrom = undefined;
     self.dsr_wallPos = undefined;
+    self.dsr_lifeStart = getTime(); //squad leader election (_dsr_squad)
     self.dsr_ejects = 0;
     self.dsr_objGoalWp = undefined;
     self dsrbot\_dsr_obj::DSR_ObjSpawn();
@@ -383,6 +384,7 @@ DSR_BotStart()
 DSR_BotRelease()
 {
     self dsrbot\_dsr_obj::DSR_ObjActionEnd(); //frees a bombzone / bomb it was planting or defusing
+    self dsrbot\_dsr_squad::DSR_SquadLeave("released"); //and its ENGAGE slot
     self.dsr_active = undefined;
     self.dsr_moving = false;
     self notify("dsr_motor_cancel");
@@ -1320,6 +1322,7 @@ DSR_StartBurst(n)
     self.dsr_burstClip = n;
     self.dsr_firing = true;
     level.dsr_tmBursts++;
+    self dsrbot\_dsr_squad::DSR_NoteGunfire(); //heard by enemy bots (HEAR_COMBAT, level 5)
     if([[level.getVars]]("bot_ai_debug") >= 3)
         logprint("DSR: burst " + self.name + " n=" + n + " mag=" + self.dsr_mag + " mode=" + self.dsr_fireMode + "\n");
 }

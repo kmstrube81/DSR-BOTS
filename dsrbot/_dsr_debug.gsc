@@ -77,7 +77,16 @@ DSR_Telemetry()
         drift = (int)(drift + 0.5);
 
         n = level.dsr_tmFrames;
-        logprint("DSR: telemetry bots=" + bots + " frames=" + n
+        squads = 0;
+        if(isDefined(level.dsr_sqUsed))
+        {
+            for(i = 0; i < level.dsr_sqMax; i++)
+            {
+                if(level.dsr_sqUsed[i])
+                    squads++;
+            }
+        }
+        logprint("DSR: telemetry level=" + level.dsr_aiLevel + " squads=" + squads + " bots=" + bots + " frames=" + n
             + " traces=" + DSR_Avg(level.dsr_tmTraces, n) + "/" + level.dsr_tmTracesMax + " cap=" + level.dsr_traceCap
             + " refused=" + level.dsr_tracesRefused
             + " thinks=" + DSR_Avg(level.dsr_tmThinks, n) + "/" + level.dsr_tmThinksMax

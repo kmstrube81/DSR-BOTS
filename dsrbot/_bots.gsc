@@ -185,6 +185,7 @@ DSR_PlayerKilled(eInflictor, attacker, iDamage, sMeansOfDeath, sWeapon, vDir, sH
 {
     //runs before Default_PlayerKilled drops the current weapon
     self dsrbot\_dsr_motor::DSR_OnKilled();
+    self dsrbot\_dsr_squad::DSR_SquadOnKill(attacker); //"great shot" from the killer's squadmates
 }
 
 DSR_PlayerDisconnect()

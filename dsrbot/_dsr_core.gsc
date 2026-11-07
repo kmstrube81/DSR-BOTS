@@ -9,6 +9,9 @@
 ****                   use the first quick-chat lines (_dsr_squad)
 ****   bot_ai_level 4: cover (_dsr_cover): they take cover when hurt (TakeCover), reload in cover (HideReload),
 ****                   wait and peek from it (WaitInCover, PeekFire) and leave it to pursue after 3 peeks
+****   bot_ai_level 5: squads (_dsr_squad, teamplay only): a shared enemy, 2 ENGAGE slots per squad (the
+****                   others take cover or stand off), FoundEnemy, a no-friendly-fire box, gunfire hearing
+****                   (HEAR_COMBAT: go and look) and squad callouts
 ************************************************************************************************* */
 
 /* *************************************************************************************************
@@ -27,6 +30,7 @@ DSR_CoreVars()
     maps\mp\uox\_uox_vars::varDef("bot", "ai_chatcooldown", "int", true, 4, 0, 60, "Bot AI Team Chatter Cooldown");
     maps\mp\uox\_uox_vars::varDef("bot", "ai_covercand", "int", true, 12, 0, 32, "Bot AI Cover Candidates Per Search (0 = lateral only)");
     maps\mp\uox\_uox_vars::varDef("bot", "ai_peekfire", "bool", true, true, "", "", "Bot AI Peek And Fire From Cover");
+    maps\mp\uox\_uox_vars::varDef("bot", "ai_squadsize", "int", true, 3, 2, 8, "Bot AI Max Bots Per Squad");
 }
 
 /* *************************************************************************************************
@@ -50,6 +54,7 @@ DSR_CoreStart()
     DSR_UpdateBudgets();
     DSR_DefineSchedules();
     dsrbot\_dsr_obj::DSR_ObjStart();
+    dsrbot\_dsr_squad::DSR_SquadStart();
 
     dsrbot\_dsr_nav::DSR_NavPrepare();
     if(!level.dsr_navReady)
@@ -191,9 +196,17 @@ DSR_BotThink()
     {
         self dsrbot\_dsr_sense::DSR_GatherConditions();
         self DSR_PointBlank();
-        //HL's leader line on a new sighting; the team cooldown keeps it to one bot (_dsr_squad)
-        if(level.dsr_aiLevel >= 3 && self.dsr_cond["NEW_ENEMY"] && self.dsr_cond["SEE_ENEMY"])
+        //HL's leader line on a new sighting (squad members leave it to their leader); the team cooldown
+        //keeps it to one bot (_dsr_squad)
+        if(level.dsr_aiLevel >= 3 && self.dsr_cond["NEW_ENEMY"] && self.dsr_cond["SEE_ENEMY"]
+            && self dsrbot\_dsr_squad::DSR_IsLeader())
             self dsrbot\_dsr_squad::DSR_Speak("statements", 1);
+        //a squadmate killed this bot's enemy (DSR_SquadOnKill)
+        if(isDefined(self.dsr_greatShot))
+        {
+            self.dsr_greatShot = undefined;
+            self dsrbot\_dsr_squad::DSR_Speak("responses", 5);
+        }
     }
     else
         self dsrbot\_dsr_sense::DSR_ClearConditions();
@@ -266,6 +279,8 @@ DSR_DefineSchedules()
     s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
     s = DSR_AddInterrupt(s, "OBJ_ACT");
     s = DSR_AddInterrupt(s, "CAN_MELEE");
+    s = DSR_AddInterruptAt(s, "SQUAD_ENEMY", 5); //a squadmate's sighting (DSR_SquadMakeEnemy)
+    s = DSR_AddInterruptAt(s, "HEAR_COMBAT", 5);
     level.dsr_sched["Patrol"] = s;
 
     //seen but can't shoot (out of range, a teammate in the way), or just lost: face it for a moment
@@ -369,6 +384,8 @@ DSR_DefineSchedules()
     s = DSR_AddInterrupt(s, "LIGHT_DAMAGE");
     s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
     s = DSR_AddInterrupt(s, "OBJ_ACT");
+    s = DSR_AddInterruptAt(s, "SQUAD_ENEMY", 5);
+    s = DSR_AddInterruptAt(s, "HEAR_COMBAT", 5);
     level.dsr_sched["Sweep"] = s;
 
     //Phase 4 (bot_ai_level 4, _dsr_cover). TakeCover: find cover from the enemy and run there; failing that
@@ -438,6 +455,33 @@ DSR_DefineSchedules()
     s = DSR_AddInterrupt(s, "CAN_FIRE");
     s = DSR_AddInterrupt(s, "CAN_MELEE");
     level.dsr_sched["Fail"] = s;
+
+    //Phase 5 (bot_ai_level 5, _dsr_squad). In cover with a shot but both squad ENGAGE slots taken: hold
+    //there facing the enemy until a slot frees (SLOT_FREE) or 1-3 s pass
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "FACE_ENEMY", "cover");
+    s = DSR_AddTask(s, "WAIT_FACE_ENEMY", -1);
+    s = DSR_AddInterrupt(s, "ENEMY_DEAD");
+    s = DSR_AddInterrupt(s, "ENEMY_LOST");
+    s = DSR_AddInterrupt(s, "CAN_MELEE");
+    s = DSR_AddInterrupt(s, "NO_AMMO");
+    s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
+    s = DSR_AddInterrupt(s, "SLOT_FREE");
+    level.dsr_sched["WaitForSlot"] = s;
+
+    //HL's FoundEnemy: the squad had lost this enemy for 5 s and it isn't looking this way: stop, face it,
+    //call it out and fire a moment later
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "FACE_ENEMY", "fire");
+    s = DSR_AddTask(s, "FOUND_ENEMY", 0);
+    s = DSR_AddTask(s, "WAIT", 0.5);
+    s = DSR_AddInterrupt(s, "ENEMY_DEAD");
+    s = DSR_AddInterrupt(s, "ENEMY_LOST");
+    s = DSR_AddInterrupt(s, "CAN_MELEE");
+    s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
+    level.dsr_sched["FoundEnemy"] = s;
 }
 
 DSR_NewSched()
@@ -530,6 +574,9 @@ DSR_SetSchedule(name)
     self dsrbot\_dsr_motor::DSR_CeaseFire();
     self dsrbot\_dsr_obj::DSR_ObjActionEnd(); //leaving a plant / defuse unfinished
     self.dsr_failSched = undefined;
+    //an ENGAGE slot is held only through engage schedules (_dsr_squad)
+    if(!dsrbot\_dsr_squad::DSR_IsEngageSched(name))
+        self dsrbot\_dsr_squad::DSR_ReleaseSlot();
     //schedules that walk away from cover, or end the fight, forget it (_dsr_cover)
     if(name == "Patrol" || name == "EstablishLineOfFire" || name == "Sweep" || name == "ObjAction")
         self dsrbot\_dsr_cover::DSR_LeaveCover();
@@ -543,8 +590,9 @@ DSR_SetSchedule(name)
 /* *************************************************************************************************
 **** DSR_GetSchedule()
 ****
-**** port of CHGrunt::GetSchedule (plan 5.5), Phase 2-4 lines; each line is gated by bot_ai_level.
-**** No squads before Phase 5, so every bot acts as HL's squadless grunt (leader checks skipped).
+**** port of CHGrunt::GetSchedule (plan 5.5); each line is gated by bot_ai_level. Squads from level 5
+**** (_dsr_squad); a squadless bot, and every bot below level 5, acts as HL's squadless grunt: leader checks
+**** are skipped and DSR_OccupySlot always succeeds.
 ************************************************************************************************* */
 DSR_GetSchedule()
 {
@@ -588,14 +636,36 @@ DSR_GetSchedule()
     {
         if(self.dsr_cond["OBJ_ACT"])
             return "ObjAction";
+        //level 5: gunfire nearby, go and look (HEAR_COMBAT is only set when there is a slot to do it with)
+        if(self.dsr_cond["HEAR_COMBAT"] && self dsrbot\_dsr_squad::DSR_Investigate())
+            return "EstablishLineOfFire";
         return "Patrol";
     }
     if(self.dsr_cond["CAN_MELEE"])
         return "Melee";
     inCover = false;
     if(level.dsr_aiLevel >= 4)
-    {
         inCover = self dsrbot\_dsr_cover::DSR_InCover();
+
+    //level 5, HL: a squad's first sighting of an enemy. Members scatter to cover; the leader calls it out
+    //(DSR_BotThink) and moves in when it has no shot
+    if(self dsrbot\_dsr_squad::DSR_Squad() >= 0 && self.dsr_cond["NEW_ENEMY"] && self.dsr_cond["SEE_ENEMY"]
+        && !self dsrbot\_dsr_obj::DSR_ObjPassive(self.dsr_enemy))
+    {
+        if(!self dsrbot\_dsr_squad::DSR_IsLeader())
+        {
+            if(!inCover)
+                return "TakeCover";
+        }
+        else if(!self.dsr_cond["CAN_FIRE"] && self dsrbot\_dsr_squad::DSR_OccupySlot())
+        {
+            self dsrbot\_dsr_squad::DSR_Speak("commands", 2); //move in
+            return "EstablishLineOfFire";
+        }
+    }
+
+    if(level.dsr_aiLevel >= 4)
+    {
         //HL: out of rounds, reload behind cover (HideReload); hurt: heavy always and light 90% take cover
         //(heavy damage in cover means the cover failed: find another)
         if(self.dsr_cond["NO_AMMO"] && self dsrbot\_dsr_motor::DSR_ReloadAmount() > 0 && !inCover)
@@ -606,7 +676,26 @@ DSR_GetSchedule()
     if(self.dsr_cond["NO_AMMO"] && self dsrbot\_dsr_motor::DSR_ReloadAmount() > 0)
         return "Reload";
     if(self.dsr_cond["CAN_FIRE"])
-        return "RangeAttack";
+    {
+        //level 5: the squad lost this enemy for 5 s and it isn't looking: call it out first (FoundEnemy)
+        if(isDefined(self.dsr_foundEnemy) && !self dsrbot\_dsr_squad::DSR_EnemyFacingMe()
+            && self dsrbot\_dsr_squad::DSR_OccupySlot())
+        {
+            self.dsr_foundEnemy = undefined;
+            return "FoundEnemy";
+        }
+        had = self dsrbot\_dsr_squad::DSR_HasSlot();
+        if(self dsrbot\_dsr_squad::DSR_OccupySlot())
+        {
+            if(!had)
+                self dsrbot\_dsr_squad::DSR_Speak("commands", 4); //suppressing fire, on taking the slot
+            return "RangeAttack";
+        }
+        //both ENGAGE slots taken: hold fire in cover, or get into some
+        if(inCover)
+            return "WaitForSlot";
+        return "TakeCover";
+    }
     if(level.dsr_aiLevel >= 4 && !self dsrbot\_dsr_obj::DSR_ObjPassive(self.dsr_enemy))
     {
         //peeked out of full cover and lost the shot: back behind it
@@ -614,19 +703,21 @@ DSR_GetSchedule()
             && distanceSquared(self.origin, self.dsr_coverPos) < 400 * 400)
             return "ReturnToCover";
         //in cover with no shot: wait, peek, wait, peek ...; after 3 peeks (3 waits with PeekFire off)
-        //without seeing the enemy, leave and pursue (maintainer)
+        //without seeing the enemy, leave and pursue (maintainer). Peeking and leaving take an ENGAGE slot
         if(inCover)
         {
             if(self.dsr_coverRounds < 3)
             {
                 if(self.dsr_schedLast == "WaitInCover")
                 {
-                    if(level.dsr_peekFire)
+                    if(level.dsr_peekFire && self dsrbot\_dsr_squad::DSR_OccupySlot())
                         return "PeekFire";
                     self.dsr_coverRounds++;
                 }
                 return "WaitInCover";
             }
+            if(!self dsrbot\_dsr_squad::DSR_OccupySlot())
+                return "WaitInCover";
             if([[level.getVars]]("bot_ai_debug") >= 2)
                 logprint("DSR: cover " + self.name + " leave rounds=" + self.dsr_coverRounds + "\n");
             self dsrbot\_dsr_cover::DSR_LeaveCover();
@@ -644,20 +735,45 @@ DSR_GetSchedule()
         if(!self dsrbot\_dsr_obj::DSR_ObjPassive(self.dsr_enemy))
         {
             if(level.dsr_aiLevel >= 3)
-                return "EstablishLineOfFire";
+            {
+                if(self dsrbot\_dsr_squad::DSR_OccupySlot())
+                    return "EstablishLineOfFire";
+                return self DSR_StandOffNoSlot();
+            }
             self dsrbot\_dsr_sense::DSR_NoteFlank(self.dsr_enemy);
         }
         return "Patrol";
     }
     //level 3, hidden and not yet forgotten: go to where it was last seen; once there (or when the way there
-    //failed) look around and give up
+    //failed) look around and give up. Level 5: without an ENGAGE slot, stand off instead (HL)
     if(level.dsr_aiLevel >= 3 && self.dsr_cond["ENEMY_OCCLUDED"] && !self dsrbot\_dsr_obj::DSR_ObjPassive(self.dsr_enemy))
     {
         if(isDefined(self.dsr_elofReached))
             return "Sweep";
-        return "EstablishLineOfFire";
+        if(self dsrbot\_dsr_squad::DSR_OccupySlot())
+            return "EstablishLineOfFire";
+        return self DSR_StandOffNoSlot();
     }
     return "CombatFace"; //a teammate in the way, or hidden and not yet forgotten (DSR_GatherConditions)
+}
+
+//self = squad bot with an enemy it can't shoot and no ENGAGE slot: Standoff (the leader says "hold
+//position"). After 3 in a row without seeing the enemy it gives the enemy up and goes back to its patrol,
+//so a squad with both slots busy elsewhere doesn't stand around for the whole enemy memory
+DSR_StandOffNoSlot()
+{
+    self.dsr_standoffs++;
+    if(self.dsr_standoffs > 3)
+    {
+        if([[level.getVars]]("bot_ai_debug") >= 2)
+            logprint("DSR: squad " + self.dsr_squad + " standdown " + self.name + " enemy=" + self.dsr_enemy.name + "\n");
+        self.dsr_standoffs = 0;
+        self dsrbot\_dsr_sense::DSR_ForgetEnemy();
+        return "Patrol";
+    }
+    if(self dsrbot\_dsr_squad::DSR_IsLeader())
+        self dsrbot\_dsr_squad::DSR_Speak("commands", 7); //hold position
+    return "Standoff";
 }
 
 //runs the current task: "running", "done" or "fail"
@@ -687,6 +803,7 @@ DSR_RunTask()
         case "POINTBLANK_SHOT": return self DSR_Task_POINTBLANK_SHOT(starting);
         case "SET_FAIL_SCHEDULE": return self DSR_Task_SET_FAIL_SCHEDULE(param);
         case "WAIT":            return self DSR_Task_WAIT(param);
+        case "FOUND_ENEMY":     return self DSR_Task_FOUND_ENEMY();
         case "GET_PATH_TO_ENEMY": return self DSR_Task_GET_PATH_TO_ENEMY(starting);
         case "RUN_PATH":        return self DSR_Task_RUN_PATH(starting);
         case "SWEEP":           return self DSR_Task_SWEEP(starting);
@@ -969,6 +1086,15 @@ DSR_Task_WAIT(seconds)
     if(getTime() - self.dsr_taskStart >= seconds * 1000)
         return "done";
     return "running";
+}
+
+//FoundEnemy (level 5): "enemy spotted" for an enemy the squad had lost
+DSR_Task_FOUND_ENEMY()
+{
+    if([[level.getVars]]("bot_ai_debug") >= 2)
+        logprint("DSR: squad " + self dsrbot\_dsr_squad::DSR_Squad() + " found " + self.name + " enemy=" + self.dsr_enemy.name + "\n");
+    self dsrbot\_dsr_squad::DSR_Speak("statements", 1);
+    return "done";
 }
 
 /* *************************************************************************************************
