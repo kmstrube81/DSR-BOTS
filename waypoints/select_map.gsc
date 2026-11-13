@@ -1,8 +1,17 @@
 choose()
 {
+
 	level.wpsize = 0;
 	level.vMapName=getCvar("mapname");
 	
+    if(isDefined(level.dsr_wpLoad))
+    {
+        [[level.dsr_wpLoad]]();
+        level.bot_wptype = (isDefined(level.dsr_wpType) && level.dsr_wpType);
+        println("Loaded map-supplied waypoints.\n");
+        return true;
+    }
+
 	switch(level.vMapName)
 	{
 		case "mp_carentan":
@@ -19,12 +28,6 @@ choose()
 			return true;
 	
 		case "mp_neuville":
-			waypoints\mp_neuville_tdm::load_waypoints();
-			level.bot_wptype = false;
-			println("Loaded.\n");
-			return true;
-		
-		case "mp_neuville-winter":
 			waypoints\mp_neuville_tdm::load_waypoints();
 			level.bot_wptype = false;
 			println("Loaded.\n");
@@ -47,12 +50,6 @@ choose()
 			level.bot_wptype = false;
 			println("Loaded.\n");
 			return true;
-		
-		case "brecourt_russian":
-			waypoints\mp_brecourt_tdm::load_waypoints();
-			level.bot_wptype = false;
-			println("Loaded.\n");
-			return true;
 	
 		case "mp_hurtgen":
 		case "mp_uo_hurtgen": //same layout as the CoD1 map (UO spawn points all fit these waypoints)
@@ -60,13 +57,7 @@ choose()
 			level.bot_wptype = false;
 			println("Loaded.\n");
 			return true;
-		
-		case "mp_hurtgen-autumn":
-			waypoints\mp_hurtgen_tdm::load_waypoints();
-			level.bot_wptype = false;
-			println("Loaded.\n");
-			return true;
-	
+
 		case "mp_dawnville":
 		case "mp_uo_dawnville": //same layout as the CoD1 map (UO spawn points all fit these waypoints)
 			waypoints\mp_dawnville_tdm::load_waypoints();
