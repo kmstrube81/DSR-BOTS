@@ -7,6 +7,40 @@
 ************************************************************************************************* */
 
 /* *************************************************************************************************
+**** DSR_FromPezWaypoints()
+****
+**** PeZBOT-format waypoints (level.waypoints[i]: .origin, .childCount, .children[]) as MeatBot nodes:
+**** level.wp[i] with the same origin, type "w" (PeZBOT has no jump, fall, ladder or camp nodes), the
+**** children as .next[] and stance 0. Reverse edges are added later as for any map (DSR_AddReverseEdges).
+**** A frame's wait every 200 nodes.
+************************************************************************************************* */
+DSR_FromPezWaypoints()
+{
+    level.wp = [];
+    for(i = 0; i < level.waypoints.size; i++)
+    {
+        src = level.waypoints[i];
+        n = spawnstruct();
+        n.origin = src.origin;
+        n.type = "w";
+        n.stance = 0;
+        n.next = [];
+        count = 0;
+        if(isDefined(src.childCount))
+            count = src.childCount;
+        for(j = 0; j < count; j++)
+        {
+            if(isDefined(src.children[j]))
+                n.next[n.next.size] = src.children[j];
+        }
+        level.wp[i] = n;
+        if(i % 200 == 199)
+            wait level.frametime;
+    }
+    logprint("DSR: nav converted " + level.wp.size + " PeZBOT waypoints map=" + getCvar("mapname") + "\n");
+}
+
+/* *************************************************************************************************
 **** DSR_NavPrepare()
 ****
 **** loads the map's waypoints and builds the grid, waiting a frame every 200 nodes
@@ -18,7 +52,12 @@ DSR_NavPrepare()
     level.dsr_cellSize = 512;
     level.dsr_gridOffset = 65536; //keeps cell coordinates positive so (int) truncation acts as floor
 
-    if(!waypoints\select_map::choose() || !isDefined(level.wp) || level.wp.size < 2)
+    loaded = waypoints\select_map::choose();
+    //map-supplied waypoints (level.dsr_wpLoad) may be in PeZBOT's format: level.waypoints[i] with .origin
+    //and .children[] (.childCount of them). Turn them into MeatBot's level.wp
+    if(loaded && !isDefined(level.wp) && isDefined(level.waypoints))
+        DSR_FromPezWaypoints();
+    if(!loaded || !isDefined(level.wp) || level.wp.size < 2)
     {
         logprint("DSR: nav unavailable map=" + getCvar("mapname") + "; bots keep stock behaviour\n");
         level.dsr_navDone = true;

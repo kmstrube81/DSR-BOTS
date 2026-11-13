@@ -450,6 +450,8 @@ DSR_AddBots()
 
     team1reals = 0;
     team2reals = 0;
+    spec1 = [];
+    spec2 = [];
 
     players = getentarray("player", "classname");
     for(i = 0; i < players.size; i++)
@@ -468,9 +470,29 @@ DSR_AddBots()
             else
                 team2bots--;
         }
+        else if(isDefined(players[i].pers["isBot"]) && isDefined(players[i].pers["botTeam"]))
+        {
+            //a bot from an earlier round, put in spectator by scr_roundreset_teams
+            if(players[i].pers["botTeam"] == 1)
+                spec1[spec1.size] = players[i];
+            else
+                spec2[spec2.size] = players[i];
+        }
     }
     team1bots = team1bots - team1reals;
     team2bots = team2bots - team2reals;
+
+    //rejoin spectating bots before adding new ones (DSR_ManageBots evens out the rest later)
+    for(i = 0; i < spec1.size && team1bots > 0; i++)
+    {
+        thread DSR_JoinBot(spec1[i], game["team1"]);
+        team1bots--;
+    }
+    for(i = 0; i < spec2.size && team2bots > 0; i++)
+    {
+        thread DSR_JoinBot(spec2[i], game["team2"]);
+        team2bots--;
+    }
 
     thread DSR_SpawnBots(team1bots, team2bots);
 }

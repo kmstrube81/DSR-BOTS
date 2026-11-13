@@ -11,5 +11,4 @@ main()
 	game["defenders"] = "axis";
 
 	level.dsr_wpLoad = waypoints\custom\wawa_3dAim_waypoints::load_waypoints;
-	level.dsr_wpType = false;
 }
