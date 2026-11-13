@@ -102,6 +102,12 @@ DSR_SenseReset()
     self.dsr_foundEnemy = undefined;
     self.dsr_squadGiven = undefined;
     self.dsr_greatShot = undefined;
+    self.dsr_sniperCall = undefined;
+    self.dsr_grenades = 2; //per life (Phase 6)
+    self.dsr_nextToss = 0;
+    self.dsr_nextTossCheck = 0;
+    self.dsr_tossed = undefined;
+    self.dsr_flankPath = undefined;
     self DSR_ClearConditions();
 }
 
@@ -611,7 +617,7 @@ DSR_NoteFlank(target)
 ****   on only counts again if this bot is within 400 units and closest to it.
 **** VERIFY: 50 as the heavy damage threshold.
 ************************************************************************************************* */
-DSR_OnDamaged(attacker, damage)
+DSR_OnDamaged(attacker, damage, weapon)
 {
     if(isPlayer(attacker) && attacker != self && isDefined(attacker.dsr_active)
         && isDefined(attacker.dsr_enemy) && attacker.dsr_enemy == self)
@@ -629,6 +635,10 @@ DSR_OnDamaged(attacker, damage)
 
     if(!self DSR_IsValidTarget(attacker))
         return;
+    //level 6: a scoped rifle (bots never carry one): "sniper!" at the next think
+    if(level.dsr_aiLevel >= 6 && isDefined(weapon)
+        && (weapon == "springfield_mp" || weapon == "kar98k_sniper_mp" || weapon == "mosin_nagant_sniper_mp"))
+        self.dsr_sniperCall = true;
     if(self DSR_IsIgnoring(attacker) && !self DSR_IsClosestWithin400(attacker))
         return;
     self.dsr_lastDmgPos = attacker.origin;

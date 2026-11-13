@@ -178,7 +178,7 @@ DSR_BotConnect()
 // so they can never veto damage or a kill, and must never wait: a wait here delays the default handler.
 DSR_PlayerDamage(eInflictor, eAttacker, iDamage, iDFlags, sMeansOfDeath, sWeapon, vPoint, vDir, sHitLoc)
 {
-    self dsrbot\_dsr_sense::DSR_OnDamaged(eAttacker, iDamage);
+    self dsrbot\_dsr_sense::DSR_OnDamaged(eAttacker, iDamage, sWeapon);
 }
 
 DSR_PlayerKilled(eInflictor, attacker, iDamage, sMeansOfDeath, sWeapon, vDir, sHitLoc)
@@ -253,8 +253,6 @@ mapIsSupportBots(map, type)
 
 loadMap(map, type)
 {
-    rcon = getCvar("rconpassword");
-    setCvar("rconpassword", level.bot_rcon);
 	players = getentarray("player", "classname");
 	for ( index = 0; index < players.size; index++ )
 	{
@@ -271,7 +269,7 @@ loadMap(map, type)
 					logprint(player.name + " initiating rotation..." + "\n");
 					player SetClientcvar( "cl_connectionAttempts", "40");
 					wait level.frametime;
-					player ExecClientCommand("rconpassword " + level.bot_rcon + ";rcon exec mp/kill.cfg;wait 300;rcon set rconpassword "+ rcon + ";reconnect");
+					level thread DSR_RconRotate(player, "mp/kill.cfg", "wait 300;reconnect"); //MeatBot's wait
 				}
 			}
 			else if(!isdefined(player.pers["isBot"]))
@@ -279,6 +277,7 @@ loadMap(map, type)
 				if(isdefined(player))
 				{
 					logprint(player.name + " reconnecting..." + "\n");
+					player SetClientcvar("cl_connectionAttempts", "40"); //keep retrying while the next map loads
 					player ExecClientCommand("wait 200;reconnect");
 				}
 			}
@@ -290,7 +289,8 @@ loadMap(map, type)
 		}
 		else
 		{
-            if(isdefined(player))
+            //listen server: only the host (client 0, never a bot) can rotate it (waitHumanPlayer)
+            if(isdefined(player) && player getEntityNumber() == 0 && !isdefined(player.pers["isBot"]))
             {
                 player closeMenu();
                 player waitHumanPlayer();
@@ -300,9 +300,12 @@ loadMap(map, type)
 	}
 }
 
-ExecClientCommand(cmd)
+//label: what to log instead of cmd, for a command that carries a password
+ExecClientCommand(cmd, label)
 {
-	logprint(self.name + " Executing Command " + cmd + "\n");
+	if(!isDefined(label))
+		label = cmd;
+	logprint(self.name + " Executing Command " + label + "\n");
 	self setClientcvar("ui_ex_clientcmd", cmd);
 	self openMenu("clientcmd");
 	self closeMenu("clientcmd");
@@ -325,14 +328,100 @@ waitHumanPlayer()
     while(game["state"] != "rotating")
         wait level.frametime;
 
-    rcon = getCvar("rconpassword");
-    ip = getCvar("net_ip");
-    setCvar("rconpassword", level.bot_rcon);
+    //a dedicated server's loadMap already picked a rotating player (level.playerAdmin): this standby is
+    //only for a server where nobody could be picked when the map ended
+    if(isDefined(level.playerAdmin) || !isDefined(self) || !isPlayer(self))
+        return;
+
+    if((int)getCvar("dedicated") == 0)
+    {
+        //listen server: the host runs the server in its own process, so it rotates it from its own console,
+        //with no rcon and no reconnect ("Can't reconnect to localhost"), as MeatBot's restart menu did. Only
+        //the host (client 0): any other client running map_rotate would start a server of its own
+        if(self getEntityNumber() != 0 || isDefined(self.pers["isBot"]))
+            return;
+        level.playerAdmin = self;
+        level.rotating = true;
+        logprint(self.name + " initiating rotation (listen server)..." + "\n");
+        self ExecClientCommand("disconnect;wait 1;map_rotate");
+        return;
+    }
+
+    //dedicated server with nobody to pick when the map ended: the first human to join rotates it, as loadMap
+    //would have
+    level.playerAdmin = self;
 	level.rotating = true;
 	logprint(self.name + " initiating rotation..." + "\n");
-    self SetClientcvar( "cl_connectionAttempts", "20");
-    self setClientCvar("rconAddress", ip);
-	self ExecClientCommand("rconpassword " + level.bot_rcon + ";rcon exec mp/rotate.cfg;wait 10;rcon set rconpassword " + rcon + ";reconnect");
+    self SetClientcvar("cl_connectionAttempts", "40");
+	level thread DSR_RconRotate(self, "mp/kill.cfg", "wait 300;reconnect");
+}
+
+/* *************************************************************************************************
+**** DSR_RconRotate(player, cfg, after)
+****
+**** A script can't run killserver / map_rotate, so a human client runs them for the server: it is handed
+**** an rcon password and sent "rcon exec <cfg>" (ExecClientCommand). To keep the server's real password
+**** off that client (it would be readable in its cvars and memory):
+****   - the password it gets is a one-time one, made here (bot_rconpassword + random digits), valid only
+****     until the cfg starts
+****   - the cfg's first line sets dsr_rotating 1; the frame the script sees it, the rest of the cfg is
+****     already queued and the real password goes straight back. Without it after 5 s (the client never
+****     sent the command) the real password goes back anyway
+****   - the client clears its own rconpassword after the command; the log never shows a password
+**** The client then runs after (reconnect). If the engine refuses setCvar("rconpassword") from script, the
+**** rotation is skipped and logged ("DSR: rcon refused"): the read back is the test.
+************************************************************************************************* */
+DSR_RconRotate(player, cfg, after)
+{
+	if(!isDefined(player) || !isPlayer(player))
+	{
+		logprint("DSR: rcon rotating player left, no rotation\n");
+		return;
+	}
+	//one rotation at a time: a second one would read the first one-time password as the real one
+	if(isDefined(level.dsr_rconBusy))
+	{
+		logprint("DSR: rcon rotation already running, " + cfg + " skipped\n");
+		return;
+	}
+	level.dsr_rconBusy = true;
+	real = getCvar("rconpassword");
+	prefix = "dsr";
+	if(isDefined(level.bot_rcon) && level.bot_rcon != "")
+		prefix = level.bot_rcon;
+	otp = prefix + randomInt(10000) + (getTime() % 10000) + randomInt(10000);
+	setCvar("dsr_rotating", "0");
+	setCvar("rconpassword", otp);
+	if(getCvar("rconpassword") != otp)
+	{
+		logprint("DSR: rcon refused: the script can't set rconpassword, no rotation\n");
+		setCvar("rconpassword", real);
+		level.dsr_rconBusy = undefined;
+		return;
+	}
+	logprint("DSR: rcon one-time password set for " + player.name + "\n");
+	player ExecClientCommand("rconpassword " + otp + ";rcon exec " + cfg + ";rconpassword -;" + after,
+		"rcon exec " + cfg + ";" + after);
+
+	frames = (int)(5 / level.frametime);
+	started = false;
+	for(f = 0; f < frames; f++)
+	{
+		wait level.frametime;
+		if(getCvar("dsr_rotating") == "1")
+		{
+			started = true;
+			break;
+		}
+	}
+	setCvar("rconpassword", real);
+	if(getCvar("rconpassword") != real)
+		logprint("DSR: rcon WARNING: the real password could not be put back\n");
+	else if(started)
+		logprint("DSR: rcon " + cfg + " started, real password restored after " + (f + 1) + " frames\n");
+	else
+		logprint("DSR: rcon " + cfg + " never started (5 s), real password restored\n");
+	level.dsr_rconBusy = undefined; //the cfg kills the server soon after; a failed rotation may be tried again
 }
 
 DSR_AddBots()

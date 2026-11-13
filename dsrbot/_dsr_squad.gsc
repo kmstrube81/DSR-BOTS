@@ -34,10 +34,13 @@ DSR_SquadStart()
     level.dsr_sqEnemy = [];
     level.dsr_sqSeen = [];
     level.dsr_sqSlot = [];
+    level.dsr_sqGren = [];
     for(i = 0; i < level.dsr_sqMax; i++)
     {
         level.dsr_sqUsed[i] = false;
         level.dsr_sqSeen[i] = 0;
+        level.dsr_sqGren[i * 2] = 0;
+        level.dsr_sqGren[i * 2 + 1] = 0;
     }
 
     level.dsr_sndNext = 0;
@@ -256,6 +259,8 @@ DSR_SquadNew(team)
         level.dsr_sqSeen[s] = 0;
         level.dsr_sqSlot[s * 2] = undefined;
         level.dsr_sqSlot[s * 2 + 1] = undefined;
+        level.dsr_sqGren[s * 2] = 0;
+        level.dsr_sqGren[s * 2 + 1] = 0;
         return s;
     }
     return -1;
@@ -362,6 +367,39 @@ DSR_ReleaseSlot()
     {
         if(isDefined(level.dsr_sqSlot[k]) && level.dsr_sqSlot[k] == self)
             level.dsr_sqSlot[k] = undefined;
+    }
+}
+
+/* *************************************************************************************************
+**** GRENADE slots (HL bits_SLOTS_HGRUNT_GRENADE, 2 per squad; Phase 6). A slot is held for 10 s from a toss,
+**** so a squad throws at most 2 grenades in any 10 s. Every bot also waits 6 s between its own tosses
+**** (dsr_nextToss, HL's m_flNextGrenadeCheck); a squadless bot has only that.
+************************************************************************************************* */
+DSR_GrenadeSlotFree()
+{
+    if(getTime() < self.dsr_nextToss)
+        return false;
+    s = self DSR_Squad();
+    if(s < 0)
+        return true;
+    now = getTime();
+    return (level.dsr_sqGren[s * 2] <= now || level.dsr_sqGren[s * 2 + 1] <= now);
+}
+
+DSR_OccupyGrenadeSlot()
+{
+    now = getTime();
+    self.dsr_nextToss = now + 6000;
+    s = self DSR_Squad();
+    if(s < 0)
+        return;
+    for(k = s * 2; k < s * 2 + 2; k++)
+    {
+        if(level.dsr_sqGren[k] <= now)
+        {
+            level.dsr_sqGren[k] = now + 10000;
+            return;
+        }
     }
 }
 

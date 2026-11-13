@@ -48,6 +48,8 @@ DSR_NavPrepare()
     level.dsr_asCrowd = []; //[node] = the search generation whose teammates' paths use it (DSR_MarkCrowd)
     level.dsr_asG = [];
     level.dsr_asParent = [];
+    level.dsr_asVisGen = []; //[node] = the search generation whose flank penalty is in dsr_asVisCost
+    level.dsr_asVisCost = [];
     level.dsr_heapNode = [];
     level.dsr_heapF = [];
     level.dsr_heapSize = 0;
@@ -363,7 +365,15 @@ DSR_PickPatrolGoal(from)
         {
             goal = self DSR_PickFlankGoal(target, from);
             if(goal >= 0)
+            {
+                //level 6: the path there keeps out of the target's sight (DSR_VisPenalty), with a callout
+                if(level.dsr_aiLevel >= 6)
+                {
+                    self.dsr_flankPath = target;
+                    self DSR_FlankCallout(target, goal);
+                }
                 return goal;
+            }
         }
     }
 
@@ -436,6 +446,18 @@ DSR_PickFlankGoal(target, from)
     if(best >= 0 && [[level.getVars]]("bot_ai_debug") >= 2)
         logprint("DSR: flank " + self.name + " target=" + target.name + " goal=" + best + " dot=" + bestDot + "\n");
     return best;
+}
+
+//self = bot setting out to flank target via goal: "attack left / right flank" (commands 5 / 6), the side
+//of the goal as the bot looks at the target
+DSR_FlankCallout(target, goal)
+{
+    a = (target.origin[0] - self.origin[0], target.origin[1] - self.origin[1], 0);
+    b = (level.wp[goal].origin[0] - target.origin[0], level.wp[goal].origin[1] - target.origin[1], 0);
+    if(a[0] * b[1] - a[1] * b[0] > 0)
+        self dsrbot\_dsr_squad::DSR_Speak("commands", 5); //left flank
+    else
+        self dsrbot\_dsr_squad::DSR_Speak("commands", 6); //right flank
 }
 
 /* *************************************************************************************************
@@ -514,6 +536,22 @@ DSR_AStarNext()
         level.dsr_searchGoal = bot.dsr_pathGoal;
         level.dsr_searchStart = bot.dsr_pathStart;
         level.dsr_searchExpanded = 0;
+
+        //a flank path (level 6, DSR_PickPatrolGoal): nodes the target can see cost extra (DSR_VisPenalty)
+        level.dsr_searchVis = undefined;
+        if(isDefined(bot.dsr_flankPath))
+        {
+            t = bot.dsr_flankPath;
+            bot.dsr_flankPath = undefined;
+            if(isPlayer(t) && isAlive(t) && t.sessionstate == "playing")
+            {
+                level.dsr_searchVis = t;
+                level.dsr_searchEye = t.origin + (0, 0, 60);
+                if(isDefined(t.dsr_marks))
+                    level.dsr_searchEye = t.dsr_marks[0].origin;
+                level.dsr_searchFwd = anglesToForward((0, t.angles[1], 0));
+            }
+        }
 
         //nodes this bot was blocked at in the last few seconds (motor DSR_Avoid)
         level.dsr_searchAvoid = [];
@@ -618,6 +656,9 @@ DSR_AStarStep(budget)
             //a node on a teammate's current path: prefer another way (not the goal, which they may share)
             if(s != goal && isDefined(level.dsr_asCrowd[s]) && level.dsr_asCrowd[s] == level.dsr_asGen)
                 g += 256;
+            //a flank path: keep out of the target's sight
+            if(isDefined(level.dsr_searchVis) && s != goal)
+                g += DSR_VisPenalty(s);
             //a node another player blocked: expensive rather than closed, so a dead end still has a way out
             for(j = 0; j < level.dsr_searchAvoid.size; j++)
             {
@@ -636,6 +677,44 @@ DSR_AStarStep(budget)
         }
     }
     return used;
+}
+
+/* *************************************************************************************************
+**** DSR_VisPenalty(node)
+****
+**** Phase 6 visibility flank. Extra cost of a node for a flank search: 0 when the target can't see it,
+**** 800 when it can. Only nodes within 2000 units and in front of the target (within 60 degrees of where
+**** it faces) are traced, from its eye to chest height over the node; behind it they cost nothing. The
+**** search spends at most a third of the frame's trace budget; a node it can't trace costs 400. Cached
+**** per search. Only ever adds cost, so the distance heuristic stays a lower bound.
+************************************************************************************************* */
+DSR_VisPenalty(node)
+{
+    if(isDefined(level.dsr_asVisGen[node]) && level.dsr_asVisGen[node] == level.dsr_asGen)
+        return level.dsr_asVisCost[node];
+    cost = 0;
+    eye = level.dsr_searchEye;
+    o = level.wp[node].origin + (0, 0, 48);
+    d = (o[0] - eye[0], o[1] - eye[1], 0);
+    dsq = distanceSquared(d, (0, 0, 0));
+    if(dsq > 1 && dsq < 2000 * 2000 && vectorDot(vectorNormalize(d), level.dsr_searchFwd) > 0.5)
+    {
+        cost = 400;
+        if(level.dsr_traces < level.dsr_traceCap / 3)
+        {
+            trace = dsrbot\_dsr_core::DSR_Trace(eye, o, false, level.dsr_searchVis);
+            if(isDefined(trace))
+            {
+                if(trace["fraction"] == 1)
+                    cost = 800;
+                else
+                    cost = 0;
+            }
+        }
+    }
+    level.dsr_asVisGen[node] = level.dsr_asGen;
+    level.dsr_asVisCost[node] = cost;
+    return cost;
 }
 
 DSR_AStarFinish(found)

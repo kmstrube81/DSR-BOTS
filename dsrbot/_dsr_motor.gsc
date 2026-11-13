@@ -320,6 +320,8 @@ DSR_BotStart()
         self.dsr_reserve = dsrbot\_dsr_core::DSR_Max(0, maps\mp\gametypes\_loadout_gmi::GetGunAmmo(stock) - self.dsr_magMax);
     self.dsr_firing = undefined;
     self.dsr_reloading = undefined;
+    self.dsr_burstState = undefined;
+    self.dsr_burstStop = 0;
     self.dsr_special = undefined;
     self.dsr_aiming = undefined;
     self.dsr_aimErrYaw = 0;
@@ -588,6 +590,9 @@ DSR_MotorRun(cmd)
             break;
         case "unstick":
             self DSR_UnstickRun();
+            break;
+        case "toss":
+            self DSR_TossRun();
             break;
     }
     self.dsr_moving = false;
@@ -1200,6 +1205,153 @@ DSR_ClimbUp(from, to)
     self DSR_WalkTo(dest);
 }
 
+/* *************************************************************************************************
+**** grenades (Phase 6, bot_ai_level 6; maintainer: no danger reaction)
+****
+**** A toss is MeatBot's: the bot holds the nationality's bot grenade weapon (already precached, stock
+**** ammo names) for a moment and the test client throws it like any shot. Two weapons, as in MeatBot:
+**** <nat>_botgrenade2_mp (speed 700, up 200) for up to 900 units, <nat>_botgrenade_mp (1100, 340) beyond.
+**** DSR aims the throw: DSR_SolveToss finds the lowest pitch whose arc lands at the target, and traces
+**** the arc (start to apex, apex to landing) through DSR_Trace.
+**** VERIFY: the grenade leaves along the view with projectileSpeed, plus projectileSpeedUp straight up,
+**** under g_gravity 800; exactly one grenade flies per toss.
+************************************************************************************************* */
+
+//self = bot. The bot grenade weapon of its nationality; far = the far-throwing one
+DSR_GrenadeWeapon(far)
+{
+    nat = "ge";
+    if(self.pers["team"] == "allies")
+    {
+        if(game["allies"] == "british")
+            nat = "uk";
+        else if(game["allies"] == "russian")
+            nat = "ru";
+        else
+            nat = "us";
+    }
+    if(far)
+        return nat + "_botgrenade_mp";
+    return nat + "_botgrenade2_mp";
+}
+
+/* *************************************************************************************************
+**** DSR_SolveToss(from, to)
+****
+**** self = bot. Picks the weapon (short throw first, up to 900) and the lowest pitch (-10 to 60 degrees up, 2 degree steps)
+**** whose arc reaches to - 32 (a grenade rolls on), then traces the arc. Sets dsr_tossWeapon, dsr_tossYaw,
+**** dsr_tossPitch (view pitch: negative is up), dsr_tossDist. Returns 1 clear, 0 no arc or blocked, -1 refused.
+**** At most 2 traces.
+************************************************************************************************* */
+DSR_SolveToss(from, to)
+{
+    flat = (to[0] - from[0], to[1] - from[1], 0);
+    dist = distance(flat, (0, 0, 0));
+    if(dist < 1)
+        return 0;
+    dir = (flat[0] / dist, flat[1] / dist, 0);
+    dz = to[2] - from[2];
+    want = dist - 32;
+
+    //the short throw up to 900 units, else (or when it can't reach, e.g. uphill) the far one
+    found = false;
+    for(w = 0; w < 2 && !found; w++)
+    {
+        far = (w == 1);
+        if(!far && dist > 900)
+            continue;
+        speed = 700;
+        up = 200;
+        if(far)
+        {
+            speed = 1100;
+            up = 340;
+        }
+        for(p = -10; p <= 60; p += 2)
+        {
+            vh = speed * cos(p);
+            vz = speed * sin(p) + up;
+            disc = vz * vz - 1600 * dz; //400 t^2 - vz t + dz = 0, half of g = 800
+            if(disc < 0)
+                continue;
+            t = (vz + DSR_Sqrt(disc)) / 800;
+            if(vh * t >= want)
+            {
+                found = true;
+                break;
+            }
+        }
+    }
+    if(!found)
+        return 0;
+
+    //the arc: start to apex, apex to the landing (or straight there when it is still rising at the end)
+    land = from + (dir[0] * vh * t, dir[1] * vh * t, vz * t - 400 * t * t);
+    tApex = vz / 800;
+    if(tApex > 0 && tApex < t)
+    {
+        apex = from + (dir[0] * vh * tApex, dir[1] * vh * tApex, vz * tApex - 400 * tApex * tApex);
+        trace = dsrbot\_dsr_core::DSR_Trace(from, apex, false, self);
+        if(!isDefined(trace))
+            return -1;
+        if(trace["fraction"] < 1)
+            return 0;
+        from = apex;
+    }
+    trace = dsrbot\_dsr_core::DSR_Trace(from, land + (0, 0, 8), false, self);
+    if(!isDefined(trace))
+        return -1;
+    if(trace["fraction"] < 1 && distanceSquared(trace["position"], land) > 96 * 96)
+        return 0;
+
+    self.dsr_tossWeapon = self DSR_GrenadeWeapon(far);
+    angles = vectorToAngles(flat);
+    self.dsr_tossYaw = angles[1];
+    self.dsr_tossPitch = 0 - p;
+    self.dsr_tossDist = (int)(dist);
+    return 1;
+}
+
+//motor command "toss": turn to the solved aim (up to 0.5 s), hold the grenade weapon 0.8 s (MeatBot held
+//it 0.75 s), then back to the run variant
+DSR_TossRun()
+{
+    self.dsr_aiming = undefined;
+    self.dsr_lookYaw = self.dsr_tossYaw;
+    self.dsr_lookPitch = self.dsr_tossPitch;
+    frames = DSR_Max1((int)(0.5 / level.frametime));
+    for(f = 0; f < frames && !self DSR_AimSettled(); f++)
+        wait level.frametime;
+
+    self DSR_SetFireMode("special", self.dsr_tossWeapon);
+    frames = DSR_Max1((int)(0.8 / level.frametime));
+    for(f = 0; f < frames; f++)
+        wait level.frametime;
+    self DSR_SetFireMode("run");
+    self.dsr_lookPitch = 0;
+}
+
+//square root by Newton's method (no sqrt builtin is used anywhere in the CoD1 scripts; VERIFY whether
+//one exists before replacing this)
+DSR_Sqrt(x)
+{
+    if(x <= 0)
+        return 0;
+    r = x;
+    if(r < 1)
+        r = 1;
+    for(i = 0; i < 24; i++)
+        r = 0.5 * (r + x / r);
+    return r;
+}
+
+DSR_Max1(n)
+{
+    if(n < 1)
+        return 1;
+    return n;
+}
+
 DSR_Hold(holdTime)
 {
     node = level.wp[self.dsr_wp];
@@ -1265,6 +1417,8 @@ DSR_MotorFrame()
 
     if(isDefined(self.dsr_firing) || isDefined(self.dsr_reloading))
         self DSR_FireFrame();
+    if(isDefined(self.dsr_burstState))
+        self DSR_BurstFrame();
 }
 
 /* *************************************************************************************************
@@ -1317,9 +1471,19 @@ DSR_StartBurst(n)
         n = self.dsr_mag;
     if(n <= 0)
         return;
+    //the Garand pings on the shot that empties the clip (lastShotAnim / lastShotSound). Unless this burst
+    //empties the magazine, load one round more and take it back when the clip is down to 1 (DSR_FireFrame;
+    //fireTime 0.135 is over a frame, so the extra round is never fired)
+    load = n;
+    self.dsr_burstStop = 0;
+    if(self.dsr_weapon == "m1garand" && n < self.dsr_mag)
+    {
+        load = n + 1;
+        self.dsr_burstStop = 1;
+    }
     self setWeaponSlotAmmo("primary", 0);
-    self setWeaponSlotClipAmmo("primary", n);
-    self.dsr_burstClip = n;
+    self setWeaponSlotClipAmmo("primary", load);
+    self.dsr_burstClip = load;
     self.dsr_firing = true;
     level.dsr_tmBursts++;
     self dsrbot\_dsr_squad::DSR_NoteGunfire(); //heard by enemy bots (HEAR_COMBAT, level 5)
@@ -1403,8 +1567,96 @@ DSR_FireFrame()
         level.dsr_tmShots += shots;
         self.dsr_burstClip = clip;
     }
-    if(clip <= 0)
+    if(clip <= self.dsr_burstStop)
+    {
+        if(clip > 0)
+        {
+            //the Garand's extra round (DSR_StartBurst): never fired, never counted
+            self setWeaponSlotClipAmmo("primary", 0);
+            self.dsr_burstClip = 0;
+        }
         self.dsr_firing = undefined;
+    }
+}
+
+/* *************************************************************************************************
+**** the burst loop (FIRE_BURST; maintainer, Phase 6)
+****
+**** DSR_BurstBegin(bursts) starts it; DSR_BurstFrame runs it every frame from DSR_MotorFrame:
+****   aim    wait out the reaction delay and for the aim to settle (a fresh skill-scaled aim error per
+****          burst); then, if the last think still had a shot (CAN_FIRE), load the burst, else "lost".
+****          Over 5 s without settling: "done"
+****   fire   until DSR_FireFrame sees the clip empty; then a burst that hit nothing may end it ("giveup",
+****          DSR_BurstMissed)
+****   pause  the skill pause (dsr_skPause + 0-300 ms), then the next burst, or "done" after the last
+**** The task reads "done" / "lost" / "giveup" at its next think. DSR_CeaseFire stops the loop.
+************************************************************************************************* */
+DSR_BurstBegin(bursts)
+{
+    self.dsr_burstsLeft = bursts;
+    self DSR_BurstAim();
+}
+
+DSR_BurstAim()
+{
+    err = self.dsr_skAimErr;
+    self.dsr_aimErrYaw = (randomFloat(2) - 1) * err;
+    self.dsr_aimErrPitch = (randomFloat(2) - 1) * err * 0.5;
+    self.dsr_burstTimeout = getTime() + 5000;
+    self.dsr_burstState = "aim";
+}
+
+DSR_BurstFrame()
+{
+    now = getTime();
+    state = self.dsr_burstState;
+    if(state == "aim")
+    {
+        if(now > self.dsr_burstTimeout)
+        {
+            self.dsr_burstState = "done";
+            return;
+        }
+        if(now < self.dsr_reactUntil || !self DSR_AimSettled())
+            return;
+        if(!self.dsr_cond["CAN_FIRE"])
+        {
+            self.dsr_burstState = "lost";
+            return;
+        }
+        self DSR_StartBurst(self DSR_BurstSize());
+        if(!isDefined(self.dsr_firing))
+        {
+            self.dsr_burstState = "done"; //no rounds left: NO_AMMO takes over
+            return;
+        }
+        self.dsr_burstStart = now;
+        self.dsr_burstState = "fire";
+        return;
+    }
+    if(state == "fire")
+    {
+        if(isDefined(self.dsr_firing))
+            return;
+        if(self dsrbot\_dsr_sense::DSR_BurstMissed(self.dsr_burstStart))
+        {
+            self.dsr_burstState = "giveup";
+            return;
+        }
+        self.dsr_burstsLeft--;
+        self.dsr_pauseUntil = now + self.dsr_skPause + randomInt(300);
+        self.dsr_burstState = "pause";
+        return;
+    }
+    if(state == "pause")
+    {
+        if(now < self.dsr_pauseUntil)
+            return;
+        if(self.dsr_burstsLeft <= 0)
+            self.dsr_burstState = "done";
+        else
+            self DSR_BurstAim();
+    }
 }
 
 /* *************************************************************************************************
@@ -1415,6 +1667,7 @@ DSR_FireFrame()
 ************************************************************************************************* */
 DSR_CeaseFire()
 {
+    self.dsr_burstState = undefined; //ends the burst loop (DSR_BurstFrame)
     if(isDefined(self.dsr_firing))
     {
         self DSR_FireFrame(); //count what was fired so far

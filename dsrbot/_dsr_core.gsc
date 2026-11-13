@@ -12,6 +12,8 @@
 ****   bot_ai_level 5: squads (_dsr_squad, teamplay only): a shared enemy, 2 ENGAGE slots per squad (the
 ****                   others take cover or stand off), FoundEnemy, a no-friendly-fire box, gunfire hearing
 ****                   (HEAR_COMBAT: go and look) and squad callouts
+****   bot_ai_level 6: extras: grenades (TossGrenade, 2 GRENADE slots per squad), flank paths that keep out of
+****                   the target's sight, flank and "sniper" callouts
 ************************************************************************************************* */
 
 /* *************************************************************************************************
@@ -21,7 +23,7 @@
 ************************************************************************************************* */
 DSR_CoreVars()
 {
-    maps\mp\uox\_uox_vars::varDef("bot", "ai_level", "int", true, 1, 0, 5, "Bot AI Level");
+    maps\mp\uox\_uox_vars::varDef("bot", "ai_level", "int", true, 1, 0, 6, "Bot AI Level");
     maps\mp\uox\_uox_vars::varDef("bot", "ai_thinkperiod", "float", true, 0.25, 0.05, 2.0, "Bot AI Think Period");
     maps\mp\uox\_uox_vars::varDef("bot", "ai_tracespersec", "int", true, 480, 20, 5000, "Bot AI Traces Per Second");
     maps\mp\uox\_uox_vars::varDef("bot", "ai_astarpersec", "int", true, 1280, 20, 20000, "Bot AI A* Expansions Per Second");
@@ -201,6 +203,12 @@ DSR_BotThink()
         if(level.dsr_aiLevel >= 3 && self.dsr_cond["NEW_ENEMY"] && self.dsr_cond["SEE_ENEMY"]
             && self dsrbot\_dsr_squad::DSR_IsLeader())
             self dsrbot\_dsr_squad::DSR_Speak("statements", 1);
+        //hit by a scoped rifle (DSR_OnDamaged, level 6)
+        if(isDefined(self.dsr_sniperCall))
+        {
+            self.dsr_sniperCall = undefined;
+            self dsrbot\_dsr_squad::DSR_Speak("statements", 6); //sniper
+        }
         //a squadmate killed this bot's enemy (DSR_SquadOnKill)
         if(isDefined(self.dsr_greatShot))
         {
@@ -300,11 +308,7 @@ DSR_DefineSchedules()
     s = DSR_AddTask(s, "STOP_MOVING", "peek");
     s = DSR_AddTask(s, "FACE_ENEMY", "fire");
     s = DSR_AddTask(s, "CHECK_FIRE", 0);
-    s = DSR_AddTask(s, "FIRE_BURST", 0);
-    s = DSR_AddTask(s, "CHECK_FIRE", 0);
-    s = DSR_AddTask(s, "FIRE_BURST", 0);
-    s = DSR_AddTask(s, "CHECK_FIRE", 0);
-    s = DSR_AddTask(s, "FIRE_BURST", 0);
+    s = DSR_AddTask(s, "FIRE_BURST", 3); //3 bursts, run frame by frame (DSR_BurstFrame)
     s = DSR_AddInterrupt(s, "NEW_ENEMY");
     s = DSR_AddInterrupt(s, "ENEMY_DEAD");
     s = DSR_AddInterrupt(s, "ENEMY_OCCLUDED");
@@ -482,6 +486,13 @@ DSR_DefineSchedules()
     s = DSR_AddInterrupt(s, "CAN_MELEE");
     s = DSR_AddInterrupt(s, "HEAVY_DAMAGE");
     level.dsr_sched["FoundEnemy"] = s;
+
+    //Phase 6 (bot_ai_level 6). HL's TossGrenade: stop, throw at the enemy (or where it was last seen), then
+    //take cover (DSR_GetSchedule, dsr_tossed). No interrupts, as in HL
+    s = DSR_NewSched();
+    s = DSR_AddTask(s, "STOP_MOVING", "now");
+    s = DSR_AddTask(s, "TOSS_GRENADE", 0);
+    level.dsr_sched["TossGrenade"] = s;
 }
 
 DSR_NewSched()
@@ -646,6 +657,14 @@ DSR_GetSchedule()
     inCover = false;
     if(level.dsr_aiLevel >= 4)
         inCover = self dsrbot\_dsr_cover::DSR_InCover();
+    //level 6, HL: straight after a toss, into cover
+    if(isDefined(self.dsr_tossed))
+    {
+        tossed = self.dsr_tossed;
+        self.dsr_tossed = undefined;
+        if(getTime() - tossed < 3000 && level.dsr_aiLevel >= 4 && !inCover)
+            return "TakeCover";
+    }
 
     //level 5, HL: a squad's first sighting of an enemy. Members scatter to cover; the leader calls it out
     //(DSR_BotThink) and moves in when it has no shot
@@ -691,7 +710,9 @@ DSR_GetSchedule()
                 self dsrbot\_dsr_squad::DSR_Speak("commands", 4); //suppressing fire, on taking the slot
             return "RangeAttack";
         }
-        //both ENGAGE slots taken: hold fire in cover, or get into some
+        //both ENGAGE slots taken: a grenade (level 6), else hold fire in cover, or get into some
+        if(self DSR_CanToss())
+            return "TossGrenade";
         if(inCover)
             return "WaitForSlot";
         return "TakeCover";
@@ -750,11 +771,70 @@ DSR_GetSchedule()
     {
         if(isDefined(self.dsr_elofReached))
             return "Sweep";
+        //level 6, HL: a grenade over the cover first
+        if(self DSR_CanToss())
+            return "TossGrenade";
         if(self dsrbot\_dsr_squad::DSR_OccupySlot())
             return "EstablishLineOfFire";
         return self DSR_StandOffNoSlot();
     }
     return "CombatFace"; //a teammate in the way, or hidden and not yet forgotten (DSR_GatherConditions)
+}
+
+/* *************************************************************************************************
+**** DSR_CanToss()
+****
+**** self = bot with an enemy (level 6; HL CheckRangeAttack2). True, with the throw solved (DSR_SolveToss)
+**** and a GRENADE slot taken, when the bot has a grenade left this life (2), a slot is free, the target
+**** point (the enemy when seen, else where it was last seen) is 400-1400 units away, no teammate is within
+**** 384 of it, and the arc is clear. A check waits 1.5 s after the last one (at most 2 traces each).
+************************************************************************************************* */
+DSR_CanToss()
+{
+    if(level.dsr_aiLevel < 6 || self.dsr_grenades <= 0 || getTime() < self.dsr_nextTossCheck
+        || !self dsrbot\_dsr_squad::DSR_GrenadeSlotFree())
+        return false;
+    to = self.dsr_enemyLastPos;
+    if(self.dsr_cond["SEE_ENEMY"])
+        to = self.dsr_enemy.origin;
+    if(!isDefined(to))
+        return false;
+    self.dsr_nextTossCheck = getTime() + 1500;
+
+    dist = distance((to[0], to[1], 0), (self.origin[0], self.origin[1], 0));
+    if(dist < 400 || dist > 1400)
+        return false;
+    players = getentarray("player", "classname");
+    for(i = 0; i < players.size; i++)
+    {
+        p = players[i];
+        if(p.sessionstate == "playing" && !self dsrbot\_dsr_sense::DSR_IsValidTarget(p)
+            && distanceSquared(p.origin, to) < 384 * 384)
+            return false;
+    }
+    if(self dsrbot\_dsr_motor::DSR_SolveToss(self dsrbot\_dsr_sense::DSR_EyePos(), to) <= 0)
+        return false;
+    self dsrbot\_dsr_squad::DSR_OccupyGrenadeSlot();
+    return true;
+}
+
+//TOSS_GRENADE: the motor turns to the solved aim and throws (DSR_TossRun); "grenade!" as it goes
+DSR_Task_TOSS_GRENADE(starting)
+{
+    if(starting)
+    {
+        self.dsr_grenades--;
+        self.dsr_tossed = getTime();
+        if([[level.getVars]]("bot_ai_debug") >= 2)
+            logprint("DSR: toss " + self.name + " weapon=" + self.dsr_tossWeapon + " dist=" + self.dsr_tossDist
+                + " pitch=" + self.dsr_tossPitch + " left=" + self.dsr_grenades + "\n");
+        self dsrbot\_dsr_squad::DSR_Speak("statements", 5); //grenade
+        self dsrbot\_dsr_motor::DSR_MotorCommand("toss");
+        return "running";
+    }
+    if(self.dsr_motorDone)
+        return "done";
+    return "running";
 }
 
 //self = squad bot with an enemy it can't shoot and no ENGAGE slot: Standoff (the leader says "hold
@@ -796,7 +876,7 @@ DSR_RunTask()
         case "FACE_ENEMY":      return self DSR_Task_FACE_ENEMY(param, starting);
         case "WAIT_FACE_ENEMY": return self DSR_Task_WAIT_FACE_ENEMY(param, starting);
         case "CHECK_FIRE":      return self DSR_Task_CHECK_FIRE();
-        case "FIRE_BURST":      return self DSR_Task_FIRE_BURST(starting);
+        case "FIRE_BURST":      return self DSR_Task_FIRE_BURST(param, starting);
         case "RELOAD":          return self DSR_Task_RELOAD(starting);
         case "OBJ_ACTION":      return self dsrbot\_dsr_obj::DSR_Task_OBJ_ACTION(starting);
         case "MELEE":           return self DSR_Task_MELEE(starting);
@@ -804,6 +884,7 @@ DSR_RunTask()
         case "SET_FAIL_SCHEDULE": return self DSR_Task_SET_FAIL_SCHEDULE(param);
         case "WAIT":            return self DSR_Task_WAIT(param);
         case "FOUND_ENEMY":     return self DSR_Task_FOUND_ENEMY();
+        case "TOSS_GRENADE":    return self DSR_Task_TOSS_GRENADE(starting);
         case "GET_PATH_TO_ENEMY": return self DSR_Task_GET_PATH_TO_ENEMY(starting);
         case "RUN_PATH":        return self DSR_Task_RUN_PATH(starting);
         case "SWEEP":           return self DSR_Task_SWEEP(starting);
@@ -1198,55 +1279,43 @@ DSR_Task_CHECK_FIRE()
 }
 
 /* *************************************************************************************************
-**** FIRE_BURST
+**** FIRE_BURST(bursts)
 ****
-**** aim (wait out the reaction delay and for the aim to settle, with a fresh skill-scaled aim error),
-**** fire (load the burst; DSR_FireFrame sees the clip empty), pause (short, skill-scaled). Gives up after
-**** 5 s. The empty clip during the pause can dry-fire: VERIFY how audible that is (Phase 2 decision).
-**** After a burst that hit nothing the bot may give up on the target (DSR_BurstMissed): the task fails and
-**** the bot moves on.
+**** starts the motor's burst loop (DSR_BurstBegin) and waits for it. The loop runs every frame, not every
+**** think, so no time is lost between bursts beyond the skill pause (maintainer, Phase 6: bots dry-fired
+**** with a shot lined up while the 0.25 s thinks caught up). Fails when the shot was lost before a burst
+**** ("fail CHECK_FIRE") or the bot gave up after missing (DSR_BurstMissed, "giveup").
 ************************************************************************************************* */
-DSR_Task_FIRE_BURST(starting)
+DSR_Task_FIRE_BURST(bursts, starting)
 {
     if(starting)
     {
         self.dsr_aiming = true;
-        self.dsr_burstStep = "aim";
-        self.dsr_taskData = getTime() + 5000;
-        err = self.dsr_skAimErr;
-        self.dsr_aimErrYaw = (randomFloat(2) - 1) * err;
-        self.dsr_aimErrPitch = (randomFloat(2) - 1) * err * 0.5;
+        self dsrbot\_dsr_motor::DSR_BurstBegin(bursts);
     }
-    if(getTime() > self.dsr_taskData)
+    state = self.dsr_burstState;
+    //a weapon swap during the task (DSR_SetFireMode -> DSR_CeaseFire, e.g. DSR_WeaponGuard) ends the loop:
+    //treat it as finished and let the schedule choose again
+    if(!isDefined(state))
+        return "done";
+    if(state == "done")
     {
-        self dsrbot\_dsr_motor::DSR_CeaseFire();
+        self.dsr_burstState = undefined;
         return "done";
     }
-
-    if(self.dsr_burstStep == "aim")
+    if(state == "lost")
     {
-        if(getTime() < self.dsr_reactUntil || !self dsrbot\_dsr_motor::DSR_AimSettled())
-            return "running";
-        self dsrbot\_dsr_motor::DSR_StartBurst(self dsrbot\_dsr_motor::DSR_BurstSize());
-        self.dsr_burstStart = getTime();
-        self.dsr_burstStep = "fire";
-        return "running";
+        self.dsr_burstState = undefined;
+        self.dsr_schedReason = "fail CHECK_FIRE";
+        return "fail";
     }
-    if(self.dsr_burstStep == "fire")
+    if(state == "giveup")
     {
-        if(isDefined(self.dsr_firing))
-            return "running";
-        if(self dsrbot\_dsr_sense::DSR_BurstMissed(self.dsr_burstStart))
-        {
-            self.dsr_schedReason = "giveup";
-            return "fail";
-        }
-        self.dsr_pauseUntil = getTime() + self.dsr_skPause + randomInt(300);
-        self.dsr_burstStep = "pause";
+        self.dsr_burstState = undefined;
+        self.dsr_schedReason = "giveup";
+        return "fail";
     }
-    if(getTime() < self.dsr_pauseUntil)
-        return "running";
-    return "done";
+    return "running";
 }
 
 /* *************************************************************************************************
