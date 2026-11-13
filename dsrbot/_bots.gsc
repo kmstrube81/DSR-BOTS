@@ -138,6 +138,8 @@ DSR_DefineMenus()
         precacheMenu(game["menu_clientcmd"]);
         game["bot_gamestarted"] = true;
         DSR_Precache();
+        //once per map (not per round): bots left over from a map change that skipped the kill/reload
+        DSR_ZombieCheck();
     }
 
 }
@@ -165,6 +167,13 @@ DSR_PlayerConnect()
         self thread DSR_BotConnect();
         return;
     }
+    //leftover bots to clear (DSR_ZombieCheck): a recorded bot reconnecting is not a human
+    if(isDefined(level.dsr_zombieReload))
+    {
+        if(getCvar("dsr_bot_" + self getEntityNumber()) == self.name)
+            return;
+        self thread DSR_ZombieAdmin();
+    }
     self thread DSR_Intermission();
 }
 
@@ -191,7 +200,10 @@ DSR_PlayerKilled(eInflictor, attacker, iDamage, sMeansOfDeath, sWeapon, vDir, sH
 DSR_PlayerDisconnect()
 {
     if(isDefined(self.pers["isBot"]))
+    {
         self dsrbot\_dsr_motor::DSR_BotRelease();
+        setCvar("dsr_bot_" + self getEntityNumber(), ""); //the slot is free (DSR_ZombieCheck)
+    }
     self dsrbot\_dsr_sense::DSR_MarksDelete();
 }
 
@@ -343,6 +355,7 @@ waitHumanPlayer()
         level.playerAdmin = self;
         level.rotating = true;
         logprint(self.name + " initiating rotation (listen server)..." + "\n");
+        DSR_ClearBotSlots(); //the host's map_rotate drops every bot
         self ExecClientCommand("disconnect;wait 1;map_rotate");
         return;
     }
@@ -411,6 +424,7 @@ DSR_RconRotate(player, cfg, after)
 		if(getCvar("dsr_rotating") == "1")
 		{
 			started = true;
+			DSR_ClearBotSlots(); //killserver drops every bot: nothing left over for the next map
 			break;
 		}
 	}
@@ -428,6 +442,8 @@ DSR_AddBots()
 {
     if([[level.getVars]]("bot_debug")) return;
 	wait 20; //wait 20 seconds to give time for players to join
+    if(isDefined(level.dsr_zombieReload))
+        return; //leftover bots found: the map is being reloaded (DSR_ZombieCheck)
 
     team1bots = [[level.getVars]]("bot_team1_num");
     team2bots = [[level.getVars]]("bot_team2_num");
@@ -519,6 +535,9 @@ DSR_SpawnBot(team, teamNo)
     {
         ent.isDsr = true;
         ent.pers["botTeam"] = teamNo;
+        //remembered across map changes, where pers is reset (DSR_ZombieCheck)
+        setCvar("dsr_bot_" + ent getEntityNumber(), ent.name);
+        setCvar("dsr_botslots", "1");
         thread DSR_JoinBot(ent, team);
     }
 }
@@ -637,3 +656,116 @@ DSR_ManageBots()
         thread DSR_SpawnBot(game["team2"], 2);
 }
 
+/* *************************************************************************************************
+**** leftover ("zombie") bots (maintainer, housekeeping)
+****
+**** A map change that doesn't go through DSR's kill/reload (a map vote, an rcon map / map_rotate) keeps
+**** the test clients connected but resets their pers, so they sit unteamed holding slots while
+**** DSR_AddBots adds a new set. Script can't kick a test client, so the map is reloaded the kill/reload
+**** way (maintainer: no re-using them; bots only join after the 20 s delay). pers and game[] don't survive
+**** a map change, cvars do:
+****   dsr_bot_<client number> = name   each DSR bot (DSR_SpawnBot); cleared when it disconnects
+****   dsr_botslots = "1"                a DSR bot was added since the last clear
+**** Both are cleared (DSR_ClearBotSlots) when a rotation has really started: DSR_RconRotate once kill.cfg
+**** runs, the listen host just before its map_rotate. So after a normal rotation the next map has
+**** nothing to check.
+****
+**** DSR_ZombieCheck (once per map, DSR_DefineMenus): with dsr_botslots set and a bot still recorded,
+**** DSR_AddBots stands down and the first human in the game (DSR_ZombieAdmin; a recorded bot's name in
+**** its slot means it is a leftover bot, not a human; only the host on a listen server) reloads the map:
+**** the current map and gametype go to the front of sv_mapRotationCurrent, so the voted / rcon'd map
+**** loads again and the rotation then carries on. At most one reload per map name in a row
+**** (dsr_zombieMap); if the server is still up 10 s after starting it, the rotation is put back.
+************************************************************************************************* */
+
+//every bot slot cvar and the flag (sv_maxclients slots)
+DSR_ClearBotSlots()
+{
+	slots = getCvarInt("sv_maxclients");
+	for(n = 0; n < slots; n++)
+	{
+		if(getCvar("dsr_bot_" + n) != "")
+			setCvar("dsr_bot_" + n, "");
+	}
+	setCvar("dsr_botslots", "");
+}
+
+//map load (DSR_DefineMenus, before any client connects; never waits)
+DSR_ZombieCheck()
+{
+	if(getCvar("dsr_botslots") == "")
+		return; //a normal rotation, a fresh server, or no bots were ever added
+
+	recorded = false;
+	slots = getCvarInt("sv_maxclients");
+	for(n = 0; n < slots && !recorded; n++)
+		recorded = (getCvar("dsr_bot_" + n) != "");
+	map = getCvar("mapname");
+	if(!recorded)
+	{
+		DSR_ClearBotSlots(); //every bot had disconnected: nothing left over
+		return;
+	}
+	if(getCvar("dsr_zombieMap") == map)
+	{
+		logprint("DSR: zombie bots still recorded after a reload of " + map + ", not reloading twice\n");
+		DSR_ClearBotSlots();
+		setCvar("dsr_zombieMap", "");
+		return;
+	}
+	level.dsr_zombieReload = true; //DSR_AddBots stands down
+	logprint("DSR: zombie leftover bots from the last map, reloading " + map + " when a player is in\n");
+}
+
+//self = a human connecting while leftover bots are recorded. The first one in the game (spectator,
+//playing or dead: the hidden command menu only works then) reloads the map
+DSR_ZombieAdmin()
+{
+	self endon("disconnect");
+	if((int)getCvar("dedicated") == 0 && self getEntityNumber() != 0)
+		return; //listen server: only the host can rotate it
+	while(!isDefined(level.frametime))
+		wait 0.1; //this early level.frametime may not exist yet (DSR_CoreStart waits for it too)
+	while(self.sessionstate != "playing" && self.sessionstate != "spectator" && self.sessionstate != "dead")
+		wait level.frametime;
+	if(isDefined(level.playerAdmin) || !isDefined(level.dsr_zombieReload))
+		return;
+	level.playerAdmin = self;
+	level thread DSR_ZombieReload(self);
+}
+
+DSR_ZombieReload(admin)
+{
+	map = getCvar("mapname");
+	rotation = getCvar("sv_mapRotationCurrent");
+	setCvar("sv_mapRotationCurrent", "gametype " + getCvar("g_gametype") + " map " + map + " " + rotation);
+	setCvar("dsr_zombieMap", map);
+	logprint(admin.name + " reloading " + map + " for leftover bots..." + "\n");
+
+	if((int)getCvar("dedicated") == 0)
+	{
+		DSR_ClearBotSlots(); //the host's map_rotate drops every bot
+		admin ExecClientCommand("disconnect;wait 1;map_rotate");
+	}
+	else
+	{
+		players = getentarray("player", "classname");
+		for(i = 0; i < players.size; i++)
+		{
+			p = players[i];
+			if(p == admin || isDefined(p.pers["isBot"]) || getCvar("dsr_bot_" + p getEntityNumber()) == p.name)
+				continue;
+			p SetClientcvar("cl_connectionAttempts", "40");
+			p ExecClientCommand("wait 200;reconnect");
+		}
+		admin SetClientcvar("cl_connectionAttempts", "40");
+		level thread DSR_RconRotate(admin, "mp/kill.cfg", "wait 300;reconnect"); //clears the slots once it runs
+	}
+
+	//still here: the kill never came (the server stops this thread when it does)
+	wait 10;
+	setCvar("sv_mapRotationCurrent", rotation);
+	setCvar("dsr_zombieMap", "");
+	level.playerAdmin = undefined;
+	logprint("DSR: zombie reload of " + map + " didn't happen, rotation put back; the next human to join tries again\n");
+}
