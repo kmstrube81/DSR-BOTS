@@ -444,6 +444,13 @@ DSR_AddBots()
 	wait 20; //wait 20 seconds to give time for players to join
     if(isDefined(level.dsr_zombieReload))
         return; //leftover bots found: the map is being reloaded (DSR_ZombieCheck)
+    while(!isDefined(level.dsr_navDone) || !level.dsr_navDone)
+        wait level.frametime;
+    if(!level.dsr_navReady)
+    {
+        logprint("DSR: no waypoints for " + getCvar("mapname") + ", no bots added\n");
+        return; //maintainer: no stock-behaviour bots on maps without nav
+    }
 
     team1bots = [[level.getVars]]("bot_team1_num");
     team2bots = [[level.getVars]]("bot_team2_num");
